@@ -2128,13 +2128,18 @@ export function createMmdPet(canvas) {
     let lastRenderAt = 0; // 帧率封顶用：上次实际渲染的时间戳(ms)
     const loop = () => {
       if (!running) return;
-      const dt = Math.min(clock.getDelta(), 0.05);
       // 帧率封顶：未到下一帧间隔则跳过本次渲染，仅续帧（避免高刷新率屏幕空转浪费 GPU）
+      // ⚠️ 跳帧时绝不能调用 clock.getDelta()：getDelta 按调用时刻清零，
+      // 在跳帧里取走会把高刷屏(120/144/165Hz)上渲染帧的 dt 压缩到单个 rAF 间隙(~7ms)
+      // 且 7/14ms 不规则交替 —— 动画时间轴 ≈0.4 倍速不规则前进、MMDPhysics(unitStep=1/65)
+      // 步进时步时停，表现为模型整体慢动作 + 抽搐。
+      // THREE.Clock 内部会累计跳帧时间，渲染帧一次 getDelta 拿到的才是完整帧间隔。
       const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
       if (now - lastRenderAt < (1000 / TARGET_FPS - 1)) {
         rafId = requestAnimationFrame(loop);
         return;
       }
+      const dt = Math.min(clock.getDelta(), 0.05);
       lastRenderAt = now;
       try {
         update(dt);

@@ -10,11 +10,21 @@ contextBridge.exposeInMainWorld('api', {
   minimize: () => ipcRenderer.invoke('window:minimize'),
   maximize: () => ipcRenderer.invoke('window:maximize'),
   isMaximized: () => ipcRenderer.invoke('window:is-maximized'),
+  // 真全屏：无参数则切换；传 true/false 可强制指定
+  toggleFullscreen: (force) => ipcRenderer.invoke('window:fullscreen', force),
+  isFullscreen: () => ipcRenderer.invoke('window:is-fullscreen'),
+  // 窗口磨砂（系统 Acrylic）：状态变化时主进程会重建主窗口
+  setWindowTransparency: (enabled) => ipcRenderer.invoke('window:set-transparency', !!enabled),
   togglePet: (show) => ipcRenderer.invoke('window:toggle-pet', show),
   disclaimerAccepted: () => ipcRenderer.invoke('disclaimer:accepted'),
   petDrag: (x, y) => ipcRenderer.send('pet:drag', { screenX: x, screenY: y }),
   dragMove: (dx, dy) => ipcRenderer.send('window:drag-move', { dx, dy }),
-  startDragging: () => ipcRenderer.send('window:start-dragging'),
+  dragStart: () => ipcRenderer.send('window:drag-start'), // 拖拽开始：setResizable(false)，防止误触发边缘缩放
+  dragEnd: () => ipcRenderer.send('window:drag-end'),     // 拖拽结束：恢复可缩放
+  setWindowPosition: (x, y) => ipcRenderer.send('window:set-position', { x, y }),
+  getWindowPosition: () => ipcRenderer.invoke('window:get-position'),
+  getRestoreBounds: () => ipcRenderer.invoke('window:get-restore-bounds'),
+  setWindowBounds: (b) => ipcRenderer.send('window:set-bounds', b),
   getPetPosition: () => ipcRenderer.invoke('pet:get-position'),
   savePetPosition: () => ipcRenderer.invoke('pet:save-position'),
   setPetIgnoreMouseEvents: (ignore, forward) => ipcRenderer.send('pet:set-ignore-mouse-events', { ignore, forward }),
@@ -118,8 +128,17 @@ contextBridge.exposeInMainWorld('api', {
   agentChat: (params) => ipcRenderer.invoke('ai:agent-chat', params),
   getAgentTools: () => ipcRenderer.invoke('ai:get-agent-tools'),
   getContextMeta: () => ipcRenderer.invoke('ai:get-context-meta'),
+
+  // ===== MCP（外部工具服务器）=====
+  mcpStart: (id) => ipcRenderer.invoke('mcp:start', id),
+  mcpStop: (id) => ipcRenderer.invoke('mcp:stop', id),
+  mcpRestart: (id) => ipcRenderer.invoke('mcp:restart', id),
+  mcpStatus: () => ipcRenderer.invoke('mcp:status'),
+  mcpSetEnabled: (ids) => ipcRenderer.invoke('mcp:set-enabled', ids),
+  mcpHealthCheck: () => ipcRenderer.invoke('mcp:health-check'),
   cancelChat: () => ipcRenderer.invoke('ai:cancel'),
   confirmToolResponse: (allowed) => ipcRenderer.invoke('ai:tool-confirm-response', allowed),
+  answerUserGuidance: (id, answer, source) => ipcRenderer.invoke('ai:ask-user-response', { id, answer, source }),
   getAgentRoles: () => ipcRenderer.invoke('agent:roles'),
   saveAgentRole: (role) => ipcRenderer.invoke('agent:role-save', role),
   deleteAgentRole: (roleId) => ipcRenderer.invoke('agent:role-delete', roleId),
@@ -127,15 +146,38 @@ contextBridge.exposeInMainWorld('api', {
   ollamaListModels: (host) => ipcRenderer.invoke('ai:ollama-list-models', host),
   ollamaTest: (host) => ipcRenderer.invoke('ai:ollama-test', host),
 
+  // ===== 多模态模型支持 =====
+  visionDetect: (providerId) => ipcRenderer.invoke('ai:vision-detect', providerId),
+  imageToDataUrl: (imagePath, maxWidth) => ipcRenderer.invoke('ai:image-to-dataurl', imagePath, maxWidth),
+  multimodalChat: (params) => ipcRenderer.invoke('ai:multimodal-chat', params),
+
+  // ===== 多 Agent 协同工作 =====
+  multiAgentPresets: () => ipcRenderer.invoke('ai:multi-agent-presets'),
+  multiAgentBuildPreset: (presetId, providerId, overrides) => ipcRenderer.invoke('ai:multi-agent-build-preset', presetId, providerId, overrides),
+  multiAgentOrchestrate: (config) => ipcRenderer.invoke('ai:multi-agent-orchestrate', config),
+  onMultiAgentEvent: (cb) => {
+    const wrapper = (_e, data) => cb(data);
+    ipcRenderer.on('ai:multi-agent-event', wrapper);
+    return () => ipcRenderer.removeListener('ai:multi-agent-event', wrapper);
+  },
+
   // ===== AI 长期记忆（设置面板「AI 记忆」）=====
   memory: {
     list: (opts) => ipcRenderer.invoke('memory:list', opts),
-    search: (query, limit) => ipcRenderer.invoke('memory:search', query, limit),
+    search: (query, limit, workdir) => ipcRenderer.invoke('memory:search', query, limit, workdir),
     save: (payload) => ipcRenderer.invoke('memory:save', payload),
     update: (id, patch) => ipcRenderer.invoke('memory:update', id, patch),
     remove: (id) => ipcRenderer.invoke('memory:delete', id),
-    clear: () => ipcRenderer.invoke('memory:clear'),
+    clear: (workdir) => ipcRenderer.invoke('memory:clear', workdir),
     stats: () => ipcRenderer.invoke('memory:stats')
+  },
+
+  // ===== AI 进化记录（近期动向 / 习惯画像，用于 AI 进化训练）=====
+  evolution: {
+    list: (limit) => ipcRenderer.invoke('evolution:list', limit),
+    stats: (days) => ipcRenderer.invoke('evolution:stats', days),
+    profile: () => ipcRenderer.invoke('evolution:profile'),
+    clear: () => ipcRenderer.invoke('evolution:clear')
   },
 
   // ===== 待办事项（当前会话的任务清单）=====
@@ -153,6 +195,69 @@ contextBridge.exposeInMainWorld('api', {
     listWindows: () => ipcRenderer.invoke('ui:list-windows'),
     audit: (opts) => ipcRenderer.invoke('ui:audit', opts),
     shotsDir: () => ipcRenderer.invoke('ui:shots-dir')
+  },
+
+  // ===== 原生虚拟桌面（Windows Virtual Desktop）=====
+  // 让截屏在独立桌面环境里进行，不打扰用户当前桌面。
+  vdesktop: {
+    status: () => ipcRenderer.invoke('vdesktop:status'),
+    list: () => ipcRenderer.invoke('vdesktop:list'),
+    current: () => ipcRenderer.invoke('vdesktop:current'),
+    switchTo: (id) => ipcRenderer.invoke('vdesktop:switch', id),
+    create: () => ipcRenderer.invoke('vdesktop:create'),
+    remove: (id, fallbackId) => ipcRenderer.invoke('vdesktop:remove', { id, fallbackId }),
+    windowDesktop: (hwnd) => ipcRenderer.invoke('vdesktop:window-desktop', hwnd),
+    moveWindow: (hwnd, id) => ipcRenderer.invoke('vdesktop:move-window', { hwnd, id })
+  },
+
+  // ===== 截屏授权（管理员密码，票据只存内存）=====
+  screenshotAuth: {
+    status: () => ipcRenderer.invoke('screenshot-auth:status'),
+    request: (reason) => ipcRenderer.invoke('screenshot-auth:request', { reason }),
+    revoke: () => ipcRenderer.invoke('screenshot-auth:revoke')
+  },
+
+  // ===== 隔离桌面（桌面分身）：CreateDesktop 独立桌面 =====
+  // ⚠️ 只用于「不需要看界面」的任务（编译/跑脚本/后台程序），跑完汇报文本结果。
+  //    预览相关接口（openPreview / closePreview / onFrame）已移除 ——
+  //    隔离桌面的画面用户看不到，做预览没有意义。需要看界面的任务在真实桌面做。
+  cloneDesktop: {
+    status: () => ipcRenderer.invoke('clone:status'),
+    ensure: (opts) => ipcRenderer.invoke('clone:ensure', opts),
+    exit: () => ipcRenderer.invoke('clone:exit'),
+    childSession: () => ipcRenderer.invoke('clone:child-session'),
+    // AI 对话页是否可见：预览小窗只在对话页展示。隐藏**不销毁**，后台继续跑，
+    // 直到 AI 任务跑完或用户点 ✕（渲染端切页/窗口显示隐藏时上报）。
+    setPageVisible: (on) => ipcRenderer.send('clone:page-visible', !!on),
+    // 监听桌面分身状态广播（starting/running/error/idle）
+    // 悬浮窗方案：宿主自己就是可见窗口，渲染端只保留轻量状态指示，不再有抓帧/前置聚焦接口
+    onState: (cb) => {
+      const w = (_e, data) => cb(data);
+      ipcRenderer.on('desktop:state', w);
+      return () => ipcRenderer.removeListener('desktop:state', w);
+    }
+  },
+
+  // ===== 画中画（PiP）：主窗口缩到右下角显示被 AI 操作的程序 =====
+  // 用户能在小窗里看 AI 干了什么，点一下画面即可接管（坐标换算由主进程做）。
+  pip: {
+    enter: (title, fps) => ipcRenderer.invoke('pip:enter', { title, fps }),
+    exit: () => ipcRenderer.invoke('pip:exit'),
+    status: () => ipcRenderer.invoke('pip:status'),
+    setTarget: (title) => ipcRenderer.invoke('pip:set-target', title),
+    // 用户在画面上点击 → 转发到真实窗口。rx/ry 是画面内相对坐标(0~1)
+    forwardClick: (rx, ry, opts) => ipcRenderer.invoke('pip:forward-click', { rx, ry, ...(opts || {}) }),
+    refresh: () => ipcRenderer.invoke('pip:refresh'),
+    onFrame: (cb) => {
+      const w = (_e, data) => cb(data);
+      ipcRenderer.on('pip:frame', w);
+      return () => ipcRenderer.removeListener('pip:frame', w);
+    },
+    onState: (cb) => {
+      const w = (_e, data) => cb(data);
+      ipcRenderer.on('pip:state', w);
+      return () => ipcRenderer.removeListener('pip:state', w);
+    }
   },
 
   // System
@@ -244,6 +349,7 @@ contextBridge.exposeInMainWorld('api', {
   updateGetBackups: () => ipcRenderer.invoke('update:get-backups'),
   relaunchApp: () => ipcRenderer.invoke('app:relaunch'),
   onUpdateDownloadProgress: (callback) => { ipcRenderer.on('update:download-progress', (_e, data) => callback(data)); },
+  onWindowStateChanged: (callback) => { ipcRenderer.on('window:state-changed', (_e, data) => callback(data)); },
   // 完整包下载中心
   updateDownloadFull: (fullInstall) => ipcRenderer.invoke('update:download-full', fullInstall),
   updateGetDownloads: () => ipcRenderer.invoke('update:get-downloads'),
@@ -279,6 +385,8 @@ contextBridge.exposeInMainWorld('api', {
   saveChatHistory: (history) => ipcRenderer.invoke('chat:save', history),
   loadChatHistory: () => ipcRenderer.invoke('chat:load'),
   clearChatHistory: () => ipcRenderer.invoke('chat:clear'),
+  // 检查项目工作目录是否仍存在
+  checkProjectExists: (p) => ipcRenderer.invoke('project:exists', p),
 
   // Speech Recognition (Windows SAPI via IPC)
   speechRecognize: () => ipcRenderer.invoke('speech:recognize'),
@@ -287,6 +395,11 @@ contextBridge.exposeInMainWorld('api', {
   // WaveIn 音频录制（主进程采集，避免渲染进程崩溃）
   speechRecordStart: () => ipcRenderer.invoke('speech:record-start'),
   speechRecordStop: () => ipcRenderer.invoke('speech:record-stop'),
+  // ASR 模块（Sherpa-ONNX + SenseVoice int8）模块式下载
+  asrStatus: () => ipcRenderer.invoke('voice:asr-status'),
+  asrDownload: () => ipcRenderer.invoke('voice:asr-download'),
+  asrCancelDownload: () => ipcRenderer.invoke('voice:asr-download-cancel'),
+  onAsrProgress: (cb) => ipcRenderer.on('voice:asr-progress', (_e, data) => cb(data)),
 
   // Path utilities (safe for renderer)
   path: {
@@ -301,6 +414,11 @@ contextBridge.exposeInMainWorld('api', {
     platform: () => os.platform(),
     arch: () => os.arch()
   },
+
+  // 系统工具
+  openExternal: (url) => ipcRenderer.invoke('sys:browse-url', url),
+  openHtml: (html) => ipcRenderer.invoke('shell:open-html', html),
+  saveCodeFile: (code, lang) => ipcRenderer.invoke('code:save-file', code, lang),
 
   // ===== BongoCat 键盘猫专用 =====
   getBongocatModel: () => ipcRenderer.invoke('bongocat:get-model'),
@@ -330,7 +448,67 @@ contextBridge.exposeInMainWorld('api', {
     updateProfile: (data) => ipcRenderer.invoke('supabase:update-profile', data),
     changePassword: (data) => ipcRenderer.invoke('supabase:change-password', data),
     loadSettings: () => ipcRenderer.invoke('supabase:load-settings'),
-    syncSettings: (settings) => ipcRenderer.invoke('supabase:sync-settings', settings)
+    syncSettings: (settings) => ipcRenderer.invoke('supabase:sync-settings', settings),
+    // 网络诊断：返回各候选端点连通性 + 系统代理信息
+    diagnose: () => ipcRenderer.invoke('supabase:diagnose')
+  },
+
+  // ===== 安全中心 =====
+  security: {
+    getConfig: () => ipcRenderer.invoke('security:get-config'),
+    setConfig: (config) => ipcRenderer.invoke('security:set-config', config),
+    getStatus: () => ipcRenderer.invoke('security:get-status'),
+    checkCommand: (command) => ipcRenderer.invoke('security:check-command', command),
+    checkFile: (filePath, operation) => ipcRenderer.invoke('security:check-file', filePath, operation),
+    checkNetwork: (url, method) => ipcRenderer.invoke('security:check-network', url, method),
+    scanSensitive: (text) => ipcRenderer.invoke('security:scan-sensitive', text),
+    encrypt: (text) => ipcRenderer.invoke('security:encrypt', text),
+    decrypt: (text) => ipcRenderer.invoke('security:decrypt', text),
+    // 纸篓
+    trashList: (type) => ipcRenderer.invoke('security:trash-list', type),
+    trashAdd: (item, type) => ipcRenderer.invoke('security:trash-add', item, type),
+    trashRestore: (id) => ipcRenderer.invoke('security:trash-restore', id),
+    trashDelete: (id) => ipcRenderer.invoke('security:trash-delete', id),
+    trashClear: (type) => ipcRenderer.invoke('security:trash-clear', type),
+    // 审计日志
+    auditList: (filters) => ipcRenderer.invoke('security:audit-list', filters),
+    auditExport: (format) => ipcRenderer.invoke('security:audit-export', format),
+    auditClear: (filters) => ipcRenderer.invoke('security:audit-clear', filters),
+    auditAdd: (category, action, details, risk) => ipcRenderer.invoke('security:audit-add', category, action, details, risk),
+    // 备份
+    backupCreate: () => ipcRenderer.invoke('security:backup-create'),
+    backupList: () => ipcRenderer.invoke('security:backup-list'),
+    backupDelete: (name) => ipcRenderer.invoke('security:backup-delete', name)
+  },
+
+  // ===== 连通器（需要授权的外部服务）=====
+  connector: {
+    list: () => ipcRenderer.invoke('connector:list'),
+    authorize: (id, opts) => ipcRenderer.invoke('connector:authorize', id, opts || {}),
+    saveCredential: (id, token) => ipcRenderer.invoke('connector:save-credential', id, token),
+    setClientId: (id, clientId) => ipcRenderer.invoke('connector:set-client-id', id, clientId),
+    setAppSecret: (id, secret) => ipcRenderer.invoke('connector:set-app-secret', id, secret),
+    disconnect: (id) => ipcRenderer.invoke('connector:disconnect', id),
+    setEnabled: (id, enabled) => ipcRenderer.invoke('connector:set-enabled', id, enabled),
+    healthCheck: () => ipcRenderer.invoke('connector:health-check'),
+    // OAuth 回调发生在主进程，通过事件通知渲染层
+    onEvent: (cb) => {
+      const listener = (_e, payload) => { try { cb(payload); } catch (err) { /* 回调异常不崩主进程 */ } };
+      ipcRenderer.on('connector:event', listener);
+      return () => ipcRenderer.removeListener('connector:event', listener);
+    }
+  },
+
+  // ===== 智能商城（本地，无服务器）=====
+  marketplace: {
+    list: () => ipcRenderer.invoke('marketplace:list'),
+    install: (id) => ipcRenderer.invoke('marketplace:install', id),
+    installWithEnv: (id, envValues) => ipcRenderer.invoke('marketplace:install-with-env', id, envValues),
+    uninstall: (id) => ipcRenderer.invoke('marketplace:uninstall', id),
+    setEnabled: (id, enabled) => ipcRenderer.invoke('marketplace:set-enabled', id, enabled),
+    status: () => ipcRenderer.invoke('marketplace:status'),
+    importFile: () => ipcRenderer.invoke('marketplace:import-file'),
+    importUrl: (url) => ipcRenderer.invoke('marketplace:import-url', url)
   }
 });
 

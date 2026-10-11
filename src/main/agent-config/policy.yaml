@@ -1,0 +1,44 @@
+version: 1
+riskyTools:
+  - run_shell
+  - write_file
+  - move_file
+  - copy_file
+  - create_directory
+  - download_file
+  - http_request
+  - open_url
+requireConfirm:
+  - run_shell
+  - write_file
+  - move_file
+  - copy_file
+  - create_directory
+  - download_file
+  - http_request
+  - open_url
+alwaysAllowed:
+  - memory_save
+  - memory_search
+  - memory_list
+  - memory_delete
+  - capture_window
+  - verify_ui
+  - analyze_screenshot
+  - todo_write
+  - todo_update
+  - todo_read
+  - ask_user
+  - launch_in_clone
+  - control_computer
+  - ensure_clone_desktop
+toolDependencies:
+  launch_in_clone:
+    - ensure_clone_desktop
+  control_computer:
+    - ensure_clone_desktop
+recognitionTools:
+  - analyze_screenshot
+  - verify_ui
+  - capture_window
+  - ensure_clone_desktop

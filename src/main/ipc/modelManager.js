@@ -360,6 +360,24 @@ function findCoverImage(modelDir, baseName) {
   }
 }
 
+// 评估一个 Cubism4 model3.json 的「完整度」得分。
+// 关键：pixi-live2d-display 的 Cubism4 运行时 isValidJSON 要求 FileReferences.Textures 非空，
+// 缺失纹理的 model3.json 必然在加载期抛 "Unknown settings format"。分值越高越优先
+// （同目录多份 model3.json 时只保留最完整的一份）。
+function scoreCubism4Json(data) {
+  let score = 0;
+  const fr = data.FileReferences || {};
+  if (fr.Moc && typeof fr.Moc === 'string') score += 1;
+  if (Array.isArray(fr.Textures) && fr.Textures.length > 0) score += 1000;
+  if (fr.Physics && typeof fr.Physics === 'string') score += 1;
+  const motions = fr.Motions || {};
+  score += Object.keys(motions).length;
+  const exps = fr.Expressions || [];
+  score += Array.isArray(exps) ? exps.length : 0;
+  if (Array.isArray(data.HitAreas) && data.HitAreas.length > 0) score += 5;
+  return score;
+}
+
 function validateModel(modelPath) {
   try {
     if (!fs.existsSync(modelPath)) {
@@ -381,25 +399,24 @@ function validateModel(modelPath) {
     }
 
     // 收集所有候选 JSON 文件
-    let candidateFiles = [];
-    if (fs.statSync(modelPath).isDirectory()) {
-      const files = walkDir(modelPath);
-      // 优先按文件名匹配标准格式
-      candidateFiles = files.filter(f => /\.json$/i.test(f));
-    } else {
-      if (/\.json$/i.test(modelPath)) {
-        candidateFiles = [modelPath];
-      }
-    }
+    const isDir = fs.statSync(modelPath).isDirectory();
+    const candidateFiles = isDir
+      ? walkDir(modelPath).filter(f => /\.json$/i.test(f))
+      : (/\.json$/i.test(modelPath) ? [modelPath] : []);
 
-    // 逐个检测 JSON 内容判断模型类型
+    // 逐个检测 JSON 内容判断模型类型，收集所有有效候选，取完整度最高者
+    let best = null, bestScore = -1;
     for (const jsonFile of candidateFiles) {
+      // 跳过系统隐藏文件（如误生成的 .model3.json），避免被当成有效模型
+      if (path.basename(jsonFile).startsWith('.')) continue;
       try {
         const data = JSON.parse(fs.readFileSync(jsonFile, 'utf-8'));
 
-        // Cubism 4: .model3.json — 含 FileReferences 和 Version
-        if (data.FileReferences && (data.FileReferences.Moc || data.FileReferences.Physics)) {
-          return {
+        // Cubism 4: .model3.json — 必须含非空 Textures，否则库侧加载抛 "Unknown settings format"
+        if (data.FileReferences && data.FileReferences.Moc) {
+          const textures = data.FileReferences.Textures;
+          if (!Array.isArray(textures) || textures.length === 0) continue;
+          const cand = {
             valid: true,
             type: 'Live2D',
             format: 'Cubism 4',
@@ -409,11 +426,14 @@ function validateModel(modelPath) {
             modelFile: jsonFile,
             data
           };
+          const score = scoreCubism4Json(data);
+          if (score > bestScore) { bestScore = score; best = cand; }
+          continue;
         }
 
         // Cubism 2: 含 model + textures 字段（文件名可能是 model.json, xxx.json 等）
         if (data.model && data.textures && Array.isArray(data.textures)) {
-          return {
+          const cand = {
             valid: true,
             type: 'Live2D',
             format: 'Cubism 2',
@@ -423,12 +443,15 @@ function validateModel(modelPath) {
             modelFile: jsonFile,
             data
           };
+          // Cubism2 一般不冲突，未选 Live2D4 时采用
+          if (bestScore < 0) { bestScore = 0; best = cand; }
         }
       } catch (e) {
         // 不是有效 JSON，跳过
       }
     }
 
+    if (best) return best;
     return { valid: false, error: '未找到有效的模型文件（Live2D 需 model3.json / Cubism2 JSON；MMD 需 .pmx / .pmd）' };
   } catch (error) {
     return { valid: false, error: error.message };
@@ -463,13 +486,21 @@ function validateAllModels(modelPath) {
 
     const candidateFiles = files.filter(f => /\.json$/i.test(f));
 
+    // 按 Moc 去重：同目录多份 model3.json（如误生成的 .model3.json + 正式 胡桃001.model3.json）
+    // 往往指向同一模型，只保留完整度最高的一份，避免导入出多份重复条目。
+    const byMoc = new Map();
     for (const jsonFile of candidateFiles) {
+      // 跳过系统隐藏文件（如误生成的 .model3.json）
+      if (path.basename(jsonFile).startsWith('.')) continue;
       try {
         const data = JSON.parse(fs.readFileSync(jsonFile, 'utf-8'));
 
-        // Cubism 4: .model3.json
-        if (data.FileReferences && (data.FileReferences.Moc || data.FileReferences.Physics)) {
-          results.push({
+        // Cubism 4: .model3.json — 必须含非空 Textures，否则库侧加载抛 "Unknown settings format"
+        if (data.FileReferences && data.FileReferences.Moc) {
+          const textures = data.FileReferences.Textures;
+          if (!Array.isArray(textures) || textures.length === 0) continue;
+          const mocKey = path.resolve(path.dirname(jsonFile), data.FileReferences.Moc);
+          const cand = {
             valid: true,
             type: 'Live2D',
             format: 'Cubism 4',
@@ -478,7 +509,10 @@ function validateAllModels(modelPath) {
             description: data.Description || '',
             modelFile: jsonFile,
             data
-          });
+          };
+          const score = scoreCubism4Json(data);
+          const prev = byMoc.get(mocKey);
+          if (!prev || score > prev.score) byMoc.set(mocKey, { cand, score });
           continue;
         }
 
@@ -499,6 +533,7 @@ function validateAllModels(modelPath) {
         // 不是有效 JSON，跳过
       }
     }
+    for (const { cand } of byMoc.values()) results.push(cand);
   } catch (error) {}
 
   return results;

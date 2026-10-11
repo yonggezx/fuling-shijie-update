@@ -106,9 +106,9 @@ function apiRequest(method, apiPath, body) {
 }
 
 // 获取仓库中已有文件的 sha（更新文件必须带 sha，否则 422）
-async function getRemoteSha(repoPath) {
+async function getRemoteSha(repoPath, branch) {
   try {
-    const res = await apiRequest('GET', `/repos/${OWNER}/${REPO}/contents/${encodeURI(repoPath)}?ref=${BRANCH}`);
+    const res = await apiRequest('GET', `/repos/${OWNER}/${REPO}/contents/${encodeURI(repoPath)}?ref=${branch}`);
     return res && res.sha ? res.sha : null;
   } catch (e) {
     if (/404/.test(e.message)) return null;
@@ -116,23 +116,23 @@ async function getRemoteSha(repoPath) {
   }
 }
 
-async function uploadFile(localFile, repoPath, label) {
+async function uploadFile(localFile, repoPath, label, branch) {
   const stat = fs.statSync(localFile);
   const sizeMB = (stat.size / 1024 / 1024).toFixed(2);
   if (!APPLY) {
-    console.log(`  [预演] ${label} → ${repoPath} (${sizeMB} MB)`);
+    console.log(`  [预演] ${label} → ${repoPath}@${branch} (${sizeMB} MB)`);
     return;
   }
-  const sha = await getRemoteSha(repoPath);
+  const sha = await getRemoteSha(repoPath, branch);
   const content = fs.readFileSync(localFile).toString('base64');
   const body = {
     message: `chore(update): 同步 ${label}`,
     content,
-    branch: BRANCH
+    branch
   };
   if (sha) body.sha = sha;
   await apiRequest('PUT', `/repos/${OWNER}/${REPO}/contents/${repoPath}`, body);
-  console.log(`  ✓ ${label} → ${repoPath} (${sizeMB} MB)${sha ? ' [更新]' : ' [新建]'}`);
+  console.log(`  ✓ ${label} → ${repoPath}@${branch} (${sizeMB} MB)${sha ? ' [更新]' : ' [新建]'}`);
 }
 
 // ========== 待上传清单 ==========
@@ -175,16 +175,22 @@ async function main() {
     console.log('没有需要同步的文件。');
     return;
   }
-  console.log(`${APPLY ? '开始同步' : '预演模式'}：共 ${files.length} 个文件 → ${OWNER}/${REPO}@${BRANCH}\n`);
+  // ★ 同时同步 main 与 gh-pages 两个分支：
+  //   客户端 buildUrlCandidates 首选 GitHub Pages（= gh-pages 分支），
+  //   若只更新 main 而不更新 gh-pages，Pages 站点会读到陈旧清单，客户端检测不到新版本/补丁。
+  const branches = Array.from(new Set([BRANCH, 'gh-pages']));
+  console.log(`${APPLY ? '开始同步' : '预演模式'}：共 ${files.length} 个文件 × ${branches.length} 个分支 → ${OWNER}/${REPO}\n`);
 
   let ok = 0, fail = 0;
-  for (const f of files) {
-    try {
-      await uploadFile(f.local, f.remote, f.label);
-      ok++;
-    } catch (e) {
-      fail++;
-      console.error(`  ✗ ${f.label} 失败: ${e.message}`);
+  for (const branch of branches) {
+    for (const f of files) {
+      try {
+        await uploadFile(f.local, f.remote, f.label, branch);
+        ok++;
+      } catch (e) {
+        fail++;
+        console.error(`  ✗ ${f.label}@${branch} 失败: ${e.message}`);
+      }
     }
   }
   console.log(`\n完成：成功 ${ok}，失败 ${fail}`);

@@ -887,7 +887,8 @@
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(text).then(() => {
             _origLog('[日志收集] 已复制 ' + _logs.length + ' 条调试日志到剪贴板');
-            alert('已复制 ' + _logs.length + ' 条调试日志到剪贴板！\n可以直接粘贴发给开发者。');
+            if (window.AppDialog) window.AppDialog.alert({ lite: true, type: 'success', title: '复制成功', message: '已复制 ' + _logs.length + ' 条调试日志到剪贴板！\n可以直接粘贴发给开发者。' });
+            else alert('已复制 ' + _logs.length + ' 条调试日志到剪贴板！\n可以直接粘贴发给开发者。');
           }).catch(err => {
             fallbackCopy(text);
           });
@@ -908,10 +909,12 @@
           document.execCommand('copy');
           document.body.removeChild(ta);
           _origLog('[日志收集] 已复制 ' + _logs.length + ' 条调试日志到剪贴板(fallback)');
-          alert('已复制 ' + _logs.length + ' 条调试日志到剪贴板！\n可以直接粘贴发给开发者。');
+          if (window.AppDialog) window.AppDialog.alert({ lite: true, type: 'success', title: '复制成功', message: '已复制 ' + _logs.length + ' 条调试日志到剪贴板！\n可以直接粘贴发给开发者。' });
+          else alert('已复制 ' + _logs.length + ' 条调试日志到剪贴板！\n可以直接粘贴发给开发者。');
         } catch (e) {
           _origError('[日志收集] 复制失败:', e.message);
-          alert('复制失败，请手动选择控制台文本复制。');
+          if (window.AppDialog) window.AppDialog.alert({ lite: true, type: 'error', title: '复制失败', message: '复制失败，请手动选择控制台文本复制。' });
+          else alert('复制失败，请手动选择控制台文本复制。');
         }
       }
 
@@ -1237,7 +1240,7 @@
         if (rand < 0.35) {
           // 显示随机气泡
           const msg = this.randomBubble('idleThought');
-          if (msg) showBubble(msg, 3000 + Math.random() * 2000);
+          if (msg) showBubble(msg, 2000 + Math.random() * 1200);
         } else if (rand < 0.65) {
           // 做一个小动作
           // 若已配置待机组合动作：在独立循环中同步循环播放，这里不重复触发；
@@ -1726,7 +1729,7 @@
 
         // 显示睡眠气泡
         const msg = this.randomBubble('goingToSleep');
-        if (msg) showBubble(msg, 3000);
+        if (msg) showBubble(msg, 2000);
 
         // 定期显示 ZZZ
         this.sleepZZZInterval = setInterval(() => {
@@ -1768,7 +1771,7 @@
               if (this.state === 'AWAKE') {
                 const wakeMsgs = ['啊~睡醒了', '伸个懒腰~', '精神满满！', '刚才做了个好梦', '继续摸鱼~'];
                 const msg = wakeMsgs[Math.floor(Math.random() * wakeMsgs.length)];
-                showBubble(msg, 2500);
+                showBubble(msg, 1800);
               }
             }, 800);
           }
@@ -1807,7 +1810,7 @@
         // 醒来气泡
         setTimeout(() => {
           const msg = this.randomBubble('returnFromSleep');
-          if (msg) showBubble(msg, 3500);
+          if (msg) showBubble(msg, 2500);
         }, 600);
       },
 
@@ -1858,7 +1861,7 @@
         this.playMotion('drag_end');
         ParamDriver.express('drag_end', 1100);
         const msg = this.randomBubble('dragged');
-        if (msg) showBubble(msg, 2000);
+        if (msg) showBubble(msg, 1500);
       },
 
       // AI思考状态
@@ -1876,7 +1879,7 @@
       // 任务完成
       onTaskDone() {
         const msg = this.randomBubble('taskDone');
-        if (msg) showBubble(msg, 2500);
+        if (msg) showBubble(msg, 1800);
       },
 
       // ====== 初始化 ======
@@ -1891,7 +1894,7 @@
         setTimeout(() => {
           if (this.state === 'AWAKE') {
             const msg = this.randomBubble('greet');
-            if (msg) showBubble(msg, 4000);
+            if (msg) showBubble(msg, 2800);
           }
         }, 1500);
       },
@@ -2704,7 +2707,13 @@
     let bongoRightKeyDownCount = 0; // 当前按下的右手按键数量
     let bongoLeftLastUpTime = 0; // 最后一次左手按键释放时间（ms）
     let bongoRightLastUpTime = 0; // 最后一次右手按键释放时间（ms）
-    const BONGO_HAND_HOLD_MS = 300; // 按键释放后手保持按下的时间（ms）
+    const BONGO_HAND_HOLD_MS = 500; // 按键释放后手保持按下的时间（ms），让手势清晰可见（原300太快看不到）
+    // ★ 输入状态缓存（参考 vladelaina/BongoCat 的"边缘事件→状态→帧节拍应用"设计）：
+    // 所有键盘事件只更新这里的状态；手部参数与按键图由渲染帧统一计算/切换，
+    // 避免高频打字时逐事件切图造成的闪烁、乱缩与全屏大图反复解码。
+    let bongoHeldKeys = new Map();   // code -> {hand, x, t}（当前按住的键，t=最后变化时间戳）
+    let bongoShownKeyImg = null;     // 当前实际显示的按键图 keyName（节拍切换，防重复设 src）
+    let bongoHandHold = { left: null, right: null }; // 松手后手保持按下的窗口 {x, until}（快速打字不抖）
     let bongoLeftHandX = -0.5; // 左手 x 位置 -1~1（-1 最左，1 最右）
     let bongoRightHandX = 0.5; // 右手 x 位置 -1~1
     let bongoKeyOverlay = null; // 键盘叠加层容器（PIXI.Container），全屏覆盖显示当前按下的键的图片
@@ -2739,6 +2748,10 @@
       bongoDestroyed = true; // ★ 设置销毁标志，防止异步回调继续执行
       bongoParamIds.clear();
       bongoParamMap = null; // 重置参数名匹配结果，避免模型切换后残留
+      // ★ 清空输入状态缓存（held 集合 / 松手保持窗口 / 按键图显示状态）
+      bongoHeldKeys.clear();
+      bongoHandHold = { left: null, right: null };
+      bongoShownKeyImg = null;
       // ★ 重置自然眨眼状态
       bongoNextBlinkTime = 0;
       bongoBlinkState = 0;
@@ -3221,21 +3234,56 @@
                 // ★ 恢复 angleX/Y/Z 设置（根因已确认是自动行为，手动设置 angle 不会导致闪烁）
                 if (bongoParamMap.angleX) setLive2DParam(bongoParamMap.angleX, calcParamVal(bongoParamMap.angleX, bongoMouseX));
                 if (bongoParamMap.angleY) setLive2DParam(bongoParamMap.angleY, calcParamVal(bongoParamMap.angleY, -bongoMouseY));
-                // 左手/右手：有按键按下时保持按下状态，否则立即收回
-                // 左手
-                if (bongoLeftKeyDownCount > 0) {
-                  bongoLeftHandTap = 1; // 保持按下
-                } else {
-                  bongoLeftHandTap = 0; // 立即收回
+                // ★ 帧节拍统一应用输入状态（参考 BongoCat 原生版"输入状态→帧应用"设计）：
+                // 从按住集合计算每手按键数/位置/敲击强度；全部释放但有 300ms 松手保持窗口时
+                // 手仍保持按下（快速打字不抖）；无任何按住时立即收回。
+                let leftCnt = 0, rightCnt = 0;
+                let leftLatest = null, rightLatest = null, globalLatest = null;
+                for (const [, info] of bongoHeldKeys) {
+                  const h = info.hand;
+                  if (h === 'left' || h === 'both') {
+                    leftCnt++;
+                    if (!leftLatest || info.t > leftLatest.t) leftLatest = info;
+                  }
+                  if (h === 'right' || h === 'both') {
+                    rightCnt++;
+                    if (!rightLatest || info.t > rightLatest.t) rightLatest = info;
+                  }
+                  if (!globalLatest || info.t > globalLatest.t) globalLatest = info;
                 }
-                // 右手
-                if (bongoRightKeyDownCount > 0) {
-                  bongoRightHandTap = 1; // 保持按下
-                } else {
-                  bongoRightHandTap = 0; // 立即收回
+                const frameNow = performance.now();
+                // 松手保持窗口：按住数为 0 但未过期 → 仍视为按下
+                if (leftCnt === 0 && bongoHandHold.left && frameNow < bongoHandHold.left.until) {
+                  leftCnt = 1; bongoLeftHandX = bongoHandHold.left.x;
+                }
+                if (rightCnt === 0 && bongoHandHold.right && frameNow < bongoHandHold.right.until) {
+                  rightCnt = 1; bongoRightHandX = bongoHandHold.right.x;
+                }
+                if (leftCnt === 0) bongoHandHold.left = null;
+                if (rightCnt === 0) bongoHandHold.right = null;
+                if (leftLatest) bongoLeftHandX = leftLatest.x;
+                if (rightLatest) bongoRightHandX = rightLatest.x;
+                bongoLeftKeyDownCount = leftCnt;
+                bongoRightKeyDownCount = rightCnt;
+                bongoLeftHandTap = leftCnt > 0 ? 1 : 0;
+                bongoRightHandTap = rightCnt > 0 ? 1 : 0;
+                // ★ 按键图节拍切换：显示"两手中最后按下的键"的图片；全部松手则隐藏。
+                // 只在显示目标变化时才 set src / 隐藏，避免每事件反复解码全屏大图。
+                let targetKeyName = null;
+                if (globalLatest) {
+                  const found = findBongoKeyImage(globalLatest.code);
+                  if (found) targetKeyName = found.keyName;
+                }
+                if (targetKeyName) {
+                  if (targetKeyName !== bongoShownKeyImg) {
+                    if (showKeyImage(targetKeyName)) bongoShownKeyImg = targetKeyName;
+                  }
+                } else if (bongoShownKeyImg) {
+                  hideKeyImage();
+                  bongoShownKeyImg = null;
                 }
                 bongoHandTap = Math.max(bongoLeftHandTap, bongoRightHandTap);
-                // 左手/右手敲击参数（直接设置 0~1，不经过范围计算）
+                // 左手/右手敲击参数：此模型 1=抬手离键（配合按键图资源）、0=手放桌上/键上
                 if (bongoParamMap.leftHand) setLive2DParam(bongoParamMap.leftHand, bongoLeftHandTap);
                 if (bongoParamMap.rightHand) setLive2DParam(bongoParamMap.rightHand, bongoRightHandTap);
                 // 左手/右手位置参数
@@ -3524,6 +3572,45 @@
         }
       }
       return null;
+    }
+
+    // ★ 通用：把一条按键边缘事件应用到输入状态缓存（held 集合 + 松手保持窗口）。
+    // 窗口内事件与全局事件统一走这里，幂等更新，重复到达无副作用；
+    // 手部参数与按键图由渲染帧统一计算（见 internalModel.update 覆写）。
+    function applyBongoKeyEvent(ev) {
+      if (!ev || !ev.code) return;
+      const keyInfo = (typeof getBongoKeyHand === 'function') ? getBongoKeyHand(ev.code) : null;
+      let hand = keyInfo ? keyInfo.hand : null;
+      // ★ 修复：手部动作与键盘按键"不一致/无动作"的次要根因。
+      // 原本这里若按键没有对应的按键叠加图（findBongoKeyImage 命中失败）就把 hand 置空，
+      // 导致大量未在 left-keys/ 里配图的按键（空格、回车、Tab、符号等）即使分配了左右手也不驱动手部。
+      // 手部参数（Live2D Param）与按键叠加图是两套独立机制：手由 param 驱动，图只是额外叠加层。
+      // 现改为：hand 一律按 getBongoKeyHand 的左右手分配保留；按键图是否显示交给渲染帧独立判断
+      // （无图就不显示，但不影响手部动作）。未分配 hand 的键仍不驱动手。
+      const nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      const isUp = ev.type === 'up';
+      if (isUp) {
+        bongoHeldKeys.delete(ev.code);
+        // 该手没有其他按住键 → 记录松手保持窗口（帧节拍做 300ms 衰减，快速打字不抖）
+        if (hand === 'left' || hand === 'both') {
+          let stillHeld = false;
+          for (const [, info] of bongoHeldKeys) {
+            if (info.hand === 'left' || info.hand === 'both') { stillHeld = true; break; }
+          }
+          if (!stillHeld) bongoHandHold.left = { x: bongoLeftHandX, until: nowMs + BONGO_HAND_HOLD_MS };
+        }
+        if (hand === 'right' || hand === 'both') {
+          let stillHeld = false;
+          for (const [, info] of bongoHeldKeys) {
+            if (info.hand === 'right' || info.hand === 'both') { stillHeld = true; break; }
+          }
+          if (!stillHeld) bongoHandHold.right = { x: bongoRightHandX, until: nowMs + BONGO_HAND_HOLD_MS };
+        }
+      } else {
+        // ★ 必须存 code：帧节拍用 globalLatest.code 查找按键图资源（left-keys/*.png），
+        // 之前漏存导致 findBongoKeyImage(undefined) 永远 miss → 按键图（资源文件）永不显示。
+        bongoHeldKeys.set(ev.code, { hand: hand, x: keyInfo ? keyInfo.x : null, t: nowMs, code: ev.code });
+      }
     }
 
     // 键盘一直显示，只是切换高亮的键
@@ -4060,7 +4147,6 @@
                 if (qm && qm._motions && Array.isArray(qm._motions)) {
                   let weightFixed = 0;
                   let startTimeFixed = 0;
-                  let loopFixed = 0;
                   const nowSeconds = performance.now() / 1000;
                   for (const entry of qm._motions) {
                     if (entry && entry._motion && typeof entry._motion.setWeight === 'function') {
@@ -4078,18 +4164,19 @@
                       entry._started = true;
                       startTimeFixed++;
                     }
-                    // ★ 关键修复：强制设置 isLoop = true
-                    // 问题：motion3.json 中 Loop: true，但 CubismMotion._isLoop 解析为 false，
-                    // 导致 time 不被取模，超过持续时间后 evaluateCurve 返回 NaN。
-                    if (entry && entry._motion && entry._motion._isLoop === false) {
-                      entry._motion._isLoop = true;
-                      loopFixed++;
-                    }
+                    // ★★★ 已废弃（2026-10-01 修复"待机表情重复播放/抽搐"）★★★
+                    // 原代码在此强制 entry._motion._isLoop = true（理由：Loop:true 解析丢失会 NaN）。
+                    // 实际副作用：队列条目 autoDelete=false 永不清理，加载时就已入队的 idle
+                    // 动作对象会在第一次播放动作时被永久改成死循环 → idle 永不结束 →
+                    // 库内部 motionFinish→startRandomMotion(idle) 随机换 idle 永不触发 →
+                    // 同一段待机动画（含眨眼/微笑等表情段）无限回绕重播，回绕处从基线
+                    // 重新淡入 → 用户看到"待机时表情反复重播 + 抽搐"。
+                    // 正确行为：动作播完自然结束，由库自动随机重启 idle（标准 pixi-live2d-display 行为）；
+                    // NaN 问题已由上方 startTimeSeconds 修复真正解决。
                   }
-                  if (weightFixed > 0 || startTimeFixed > 0 || loopFixed > 0) {
+                  if (weightFixed > 0 || startTimeFixed > 0) {
                     console.log('[L2D] ★ 动作修复: weight=' + weightFixed +
                       ', startTime=' + startTimeFixed +
-                      ', isLoop=' + loopFixed +
                       ' (now=' + nowSeconds + 's)');
                   }
 
@@ -5047,30 +5134,12 @@
             if (bubble) showBubble(bubble, 2000);
           });
 
-          // ★ 动作播放完成后自动恢复 idle 状态
-          // pixi-live2d-display 的 MotionManager 在动作完成后触发 'finish' 事件，
-          // 监听该事件并自动播放 idle，避免动作做完后模型停在最后一帧。
-          if (currentModel.motionManager) {
-            currentModel.motionManager.on('finish', () => {
-              setTimeout(() => {
-                if (!currentModel) return;
-                // ★ 睡眠状态下不自动恢复 idle，避免 sleep 动作完成后被 idle 覆盖
-                // （idle 中的眨眼/微笑表情会与睡眠闭眼冲突，导致左右眼状态不一致）
-                if (typeof PetBrain !== 'undefined' && PetBrain.state === 'SLEEPING') return;
-                // Bongocat 模式不播放 idle（完全由键盘/鼠标驱动）
-                if (window.isBongocatMode) return;
-                // 检查当前是否还有动作在播放（避免打断新播放的动作）
-                const mm = currentModel.motionManager;
-                if (mm && mm.isFinished && !mm.isFinished()) {
-                  try { currentModel.motion('idle'); } catch (_) {}
-                } else if (mm && typeof mm.isFinished === 'undefined') {
-                  // 旧版本没有 isFinished 方法，直接播放 idle
-                  try { currentModel.motion('idle'); } catch (_) {}
-                }
-              }, 150);
-            });
-            console.log('[loadModel] ★ 已监听动作完成事件，自动恢复 idle');
-          }
+          // ★★★ 已移除（2026-10-01）：监听 'finish' 自动恢复 idle 的死代码 ★★★
+          // pixi-live2d-display 实际发出的事件名是 'motionFinish'（cubism4.js MotionManager.update），
+          // 'finish' 从不触发 → 此监听器从未生效；
+          // 且其内部判断写反了（!mm.isFinished() 即"仍有动作在播"时反而强切 idle，
+          // 若事件真的触发会打断新动作、甚至形成 idle 无限重启循环）。
+          // 动作播完后由库内部 update() → state.complete() → startRandomMotion(idle) 自动恢复待机。
 
           // 发现动作/表情/参数驱动
           discoverMotions();
@@ -6548,6 +6617,7 @@
         // 而 _render 中只有 if (this.deltaTime) 才调用 internalModel.update()，
         // 导致 motionManager.update 不执行，动作参数不更新，模型保持静止。
         // 修复：手动注册 ticker 回调调用 currentModel.update(dt)，确保 deltaTime 被设置。
+        // （与安装版一致：update 收到毫秒级 dt≈16.7ms@60fps，物理/动作/呼吸时序才正常）
         try {
           if (currentModel && typeof currentModel.update === 'function') {
             // 先尝试启用 autoUpdate（如果 window.PIXI.Ticker 存在会自动注册）
@@ -6889,7 +6959,7 @@
       setTimeout(() => { loading.style.display = 'none'; }, 300);
     }
 
-    function showBubble(text, duration = 3000) {
+    function showBubble(text, duration = 2000) {
       chatBubble.textContent = text;
       chatBubble.classList.add('show');
       PetBrain.isBubbleShowing = true;
@@ -7044,32 +7114,54 @@
     // 设置动态点击穿透
     function setupDynamicClickThrough() {
       // mousemove 事件在 setIgnoreMouseEvents(true, {forward:true}) 时仍会被转发
+      // ★ 性能优化：使用 requestAnimationFrame 节流 + 滞后切换，避免边缘抖动频繁调用 setIgnoreMouseEvents 导致卡顿
+      let pendingCaptureState = null;
+      let captureSwitchTimer = null;
       document.addEventListener('mousemove', (e) => {
         if (!dynamicClickThrough) return;
-        // 菜单/输入等UI覆盖层强制捕获期间，不切回穿透（否则菜单交互会被打断）
-        // 对话框(AppDialog)活跃时也不切回穿透，否则确认框按钮点击穿透到桌面
         if (uiForceCapture || window.__petDialogActive) return;
 
-        const shouldCapture = shouldCaptureAtPoint(e.clientX, e.clientY);
+        // 用 requestAnimationFrame 限制每帧最多处理一次
+        if (pendingCaptureState !== null) return;
+        pendingCaptureState = { x: e.clientX, y: e.clientY };
+        requestAnimationFrame(() => {
+          if (!pendingCaptureState) return;
+          const pt = pendingCaptureState;
+          pendingCaptureState = null;
+          if (!dynamicClickThrough) return;
 
-        if (shouldCapture && !isCapturingMouse) {
-          // 切换到捕获模式
-          window.api.setPetIgnoreMouseEvents(false, false);
-          isCapturingMouse = true;
-          // ★ 鼠标进入模型区域时聚焦窗口，使小键盘动作触发生效（不需要点击）
-          // 但输入框有焦点时不聚焦，避免输入框失焦无法打字、键盘事件被宠物捕获触发动作
-          if (currentPetType !== 'MMD' && window.isBongocatMode !== true) {
-            const ae = document.activeElement;
-            const isInputFocused = ae && (ae.id === 'pet-input' || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable);
-            if (!isInputFocused && window.api && typeof window.api.focusPetWindow === 'function') {
-              window.api.focusPetWindow();
+          const shouldCapture = shouldCaptureAtPoint(pt.x, pt.y);
+
+          if (shouldCapture && !isCapturingMouse) {
+            // 进入模型区域：立即切换到捕获模式（响应要快）
+            if (captureSwitchTimer) { clearTimeout(captureSwitchTimer); captureSwitchTimer = null; }
+            window.api.setPetIgnoreMouseEvents(false, false);
+            isCapturingMouse = true;
+            if (currentPetType !== 'MMD' && window.isBongocatMode !== true) {
+              const ae = document.activeElement;
+              const isInputFocused = ae && (ae.id === 'pet-input' || ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable);
+              if (!isInputFocused && window.api && typeof window.api.focusPetWindow === 'function') {
+                window.api.focusPetWindow();
+              }
             }
+          } else if (!shouldCapture && isCapturingMouse) {
+            // 离开模型区域：延迟 80ms 再切回穿透（避免边缘抖动频繁切换）
+            if (captureSwitchTimer) return;
+            captureSwitchTimer = setTimeout(() => {
+              captureSwitchTimer = null;
+              if (!dynamicClickThrough || isDragging || uiForceCapture || window.__petDialogActive) return;
+              // 延迟后再次确认，防止期间鼠标又移回模型
+              if (!shouldCaptureAtPoint(pt.x, pt.y)) {
+                window.api.setPetIgnoreMouseEvents(true, true);
+                isCapturingMouse = false;
+              }
+            }, 80);
+          } else if (shouldCapture && isCapturingMouse && captureSwitchTimer) {
+            // 延迟期间鼠标又移回模型，取消延迟切换
+            clearTimeout(captureSwitchTimer);
+            captureSwitchTimer = null;
           }
-        } else if (!shouldCapture && isCapturingMouse) {
-          // 切换到穿透模式（保留 forward 以继续接收 mousemove）
-          window.api.setPetIgnoreMouseEvents(true, true);
-          isCapturingMouse = false;
-        }
+        });
       });
 
       // ★ 鼠标点击模型区域时聚焦窗口，使窗口获得键盘焦点
@@ -7414,17 +7506,17 @@
         if (['PageUp','PageDown','Home','End','Insert','Delete'].includes(key)) return;
         if (key === 'PrintScreen' || key === 'Pause') return;
 
-        // 节流
+        // ★ Bongocat模式：只更新输入状态缓存（held 集合），手部参数与按键图由帧节拍统一应用。
+        // 状态更新无开销，不走下方 60ms 节流（避免快速打字丢键导致手不响应）。
+        if (bongoInteractionActive) {
+          try { applyBongoKeyEvent({ code: code, type: 'down' }); } catch (err) {}
+          return;
+        }
+
+        // 节流（仅普通模型的动作播放需要）
         const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
         if (now - lastTapAt < 60) return;
         lastTapAt = now;
-
-        // ★ Bongocat模式：使用专用参数控制打字动作（模型没有Motions动作组）
-        if (bongoInteractionActive) {
-          const ok = bongocatTypeDirect(code);
-          console.log('[Typing] Bongocat参数打字:', ok ? '成功' : '失败', 'key=', key, 'code=', code);
-          return;
-        }
 
         // 普通 Live2D 模型：播放模型自带的键盘/打字动作组
         if (!keyboardMotionGroups || keyboardMotionGroups.length === 0) {
@@ -7451,102 +7543,73 @@
         }
       }
 
-      // ① 窗口内键盘事件
+      // ① 窗口内键盘事件：按键状态统一写入 held 缓存（handleTypingKey 内已处理 down），
+      // 手部参数与按键图由帧节拍统一应用，不再逐事件直接切图
       window.addEventListener('keydown', function(e) {
         try {
           handleTypingKey(e.key, e.code);
-          // ★ BongoCat 模式下，窗口内键盘事件也更新按键叠加层
-          if (bongoInteractionActive && !bongoDestroyed) {
-            try { updateBongoKeyOverlay(e.code, true); } catch (err) {}
-          }
         } catch (err) {}
       }, true);
-      // ★ 窗口内键盘释放事件：隐藏按键图片
+      // ★ 窗口内键盘释放事件：更新输入状态缓存（幂等，与全局事件重复到达无副作用）
       window.addEventListener('keyup', function(e) {
         try {
           if (bongoInteractionActive && !bongoDestroyed) {
-            try { updateBongoKeyOverlay(e.code, false); } catch (err) {}
+            try { applyBongoKeyEvent({ code: e.code, type: 'up' }); } catch (err) {}
           }
         } catch (err) {}
       }, true);
 
       // ② 全局键盘事件（主进程通过IPC发送，窗口失去焦点也能响应）
+      // ★ 数据格式（主进程 globalKeyboard 重构后）：
+      //   { batch: true, events: [{key, code, vkCode, type:'down'|'up', t} ...] }  批量推送
+      //   { clear: true, events: [...] }                                             锁屏/窗口隐藏清空按住
+      //   兼容旧格式：{ key, code, type } 单条
       // ★ try-catch 包裹：IPC 回调中的未捕获异常可能导致渲染进程崩溃
       if (window.api && window.api.on) {
         window.api.on('bongocat:global-keydown', (data) => {
           // ★ 防崩溃：已销毁则忽略
           if (bongoDestroyed) return;
-          console.log('[Bongocat] 全局键盘事件:', JSON.stringify(data));
-          // ★ 增强：BongoCat 模式下且输入框聚焦时，忽略全局键盘事件，避免打字时触发 BongoCat 动作
           try {
+            // ★ 仅在输入框"可见"时才忽略全局键盘事件（避免在本窗口输入框打字时误触发 BongoCat 动作）。
+            // 修复：BongoCat 模式下输入框被隐藏（display:none），若仍按 activeElement 拦截，
+            // 会导致全局键盘（用户在别的窗口打字）完全无法驱动手部/按键叠加层，
+            // 表现为"鼠标跟随正常、按键盘手不动"。现改为只在输入框真正可见时才跳过。
             const ae = document.activeElement;
-            if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return;
-          } catch (_) {}
-          if (data && data.key) {
-            try {
-              // ★ 根据按键状态（down/up）分别处理
-              const isUp = data.type === 'up';
-              // ★ 键盘叠加层：按下时切换到对应键的高亮图片，释放时恢复默认
-              console.log('[Bongocat] 调用 updateBongoKeyOverlay: code=', data.code, 'isDown=', !isUp);
-              try { updateBongoKeyOverlay(data.code, !isUp); } catch (e) { console.error('[Bongocat] updateBongoKeyOverlay 异常:', e.message); }
-              if (bongoInteractionActive) {
-                // BongoCat 模式：跟踪左右手按键状态，释放后保持300ms再缩回
-                const keyInfo = (typeof getBongoKeyHand === 'function') ? getBongoKeyHand(data.code) : null;
-                let hand = keyInfo ? keyInfo.hand : null;
-                // ★ 调试：方向键和 WASD 键的详细信息
-                if (data.code && (data.code.startsWith('Arrow') || data.code === 'KeyW' || data.code === 'KeyA' || data.code === 'KeyS' || data.code === 'KeyD')) {
-                  const foundDebug = findBongoKeyImage(data.code);
-                  console.log('[Bongocat] ★ 方向键/WASD调试:', 'code=', data.code, 'key=', data.key,
-                    'keyInfo=', JSON.stringify(keyInfo), 'hand=', hand,
-                    'found=', foundDebug ? foundDebug.keyName : 'null',
-                    'bongoKeyImages长度=', bongoKeyImages ? Object.keys(bongoKeyImages).length : 0);
-                }
-                // ★ 修复：只有模型支持的按键（有对应按键图片）才触发手部动作
-                // 避免按下模型不支持的按键时左手也会消失的问题
-                // 使用通用查找函数（支持 num1 等多种命名），确保和 updateBongoKeyOverlay 一致
-                // ★ 例外：方向键（已绑定到 WASD）始终触发手部动作，不管模型有没有对应按键图片
-                const isArrowKey = data.code && (data.code.startsWith('Arrow') || data.code === 'Numpad8' || data.code === 'Numpad2' || data.code === 'Numpad4' || data.code === 'Numpad6');
-                if (!isArrowKey && bongoKeyImages && Object.keys(bongoKeyImages).length > 0 && hand !== null) {
-                  const found = findBongoKeyImage(data.code);
-                  if (!found) {
-                    console.log('[Bongocat] 模型不支持按键', data.code, '，不触发手部动作');
-                    hand = null;
-                  }
-                }
-                const nowMs = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-                if (isUp) {
-                  // 释放：减少对应手的按键计数，记录释放时间（不立即归零，等300ms后在update中衰减）
-                  if (hand === 'left' || hand === 'both') {
-                    if (bongoLeftKeyDownCount > 0) bongoLeftKeyDownCount--;
-                    if (bongoLeftKeyDownCount === 0) bongoLeftLastUpTime = nowMs;
-                  }
-                  if (hand === 'right' || hand === 'both') {
-                    if (bongoRightKeyDownCount > 0) bongoRightKeyDownCount--;
-                    if (bongoRightKeyDownCount === 0) bongoRightLastUpTime = nowMs;
-                  }
-                  // 未知键（hand=null）不影响手的状态
-                } else {
-                  // 按下：增加对应手的按键计数，调用 bongocatTypeDirect 设置敲击参数和位置
-                  if (hand === 'left' || hand === 'both') {
-                    bongoLeftKeyDownCount++;
-                  }
-                  if (hand === 'right' || hand === 'both') {
-                    bongoRightKeyDownCount++;
-                  }
-                  // 只有模型支持的按键才调用 bongocatTypeDirect
-                  if (hand !== null) {
-                    bongocatTypeDirect(data.code);
-                  }
-                }
-              } else {
-                // 普通 Live2D 模型：只在按下时播放动作，释放时忽略
-                if (!isUp) {
-                  handleTypingKey(data.key, data.code);
+            if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) {
+              const aeVisible = ae.offsetWidth > 0 || ae.offsetHeight > 0 || (typeof ae.getClientRects === 'function' && ae.getClientRects().length > 0);
+              if (aeVisible) return;
+            }
+            if (!data || typeof data !== 'object') return;
+
+            // 清空事件：锁屏/安全桌面/窗口隐藏/会话切换 → 复位全部按住状态
+            // 手部参数与按键图由下一帧节拍统一复位
+            if (data.clear) {
+              bongoHeldKeys.clear();
+              bongoHandHold = { left: null, right: null };
+              return;
+            }
+
+            // 批量（主进程按节拍推送）或单条（兼容旧格式）
+            const evs = Array.isArray(data.events) ? data.events : (data.key ? [data] : []);
+
+            // 普通 Live2D 模型：批量事件中的 down 仍触发打字动作（保留原全局打字响应）
+            if (!bongoInteractionActive) {
+              for (let i = 0; i < evs.length; i++) {
+                const ev = evs[i];
+                if (ev && ev.key && ev.type !== 'up') {
+                  try { handleTypingKey(ev.key, ev.code); } catch (err) {}
                 }
               }
-            } catch (err) {
-              console.error('[Bongocat] 全局键盘回调异常:', err);
+              return;
             }
+
+            // BongoCat 模式：全部只更新输入状态缓存（held 集合 + 松手保持窗口），
+            // 手部参数与按键图由渲染帧统一计算/切换，不在此处直接设参数或切图
+            for (let i = 0; i < evs.length; i++) {
+              try { applyBongoKeyEvent(evs[i]); } catch (err) {}
+            }
+          } catch (err) {
+            console.error('[Bongocat] 全局键盘回调异常:', err);
           }
         });
 
@@ -8367,7 +8430,7 @@
           // bongocat 的眼球跟踪使用全局鼠标事件，不受影响
           container.style.pointerEvents = 'none';
           dynamicClickThrough = false;
-          window.api.setPetIgnoreMouseEvents(true, true);
+
           isCapturingMouse = false;
           // ★ 完全穿透时输入框不应捕获事件（其 .show 的 pointer-events:auto 会打破穿透），
           // 强制隐藏输入框并恢复模型居中（取消底部预留）。
@@ -8386,7 +8449,7 @@
           // 动态逐像素穿透：透明区域穿透，模型像素捕获（可拖动模型）
           container.style.pointerEvents = 'auto';
           dynamicClickThrough = true;
-          window.api.setPetIgnoreMouseEvents(true, true); // 前向模式，mousemove 转发用于像素检测
+          isCapturingMouse = false;
           // 下次 mousemove 会自动处理捕获/穿透切换
         }
       });
@@ -8431,7 +8494,7 @@
           // 「模型列表应用」行为不一致，且 200ms 固定延迟下参数经常未就绪。
           setTimeout(() => { startBongocatMode(); }, 50);
 
-          showBubble('BongoCat 键盘猫已启动！', 3000);
+          showBubble('BongoCat 键盘猫已启动！', 2500);
         } catch (e) {
           stopBongocatInteraction();
           if (window.api && typeof window.api.setBongocatActive === 'function') {
@@ -8482,7 +8545,7 @@
             ParamDriver.stop();
             stopBongocatInteraction();
             showCSSFallback();
-            showBubble('已恢复默认灵汐造型！', 3000);
+            showBubble('已恢复默认灵汐造型！', 2500);
             return;
           }
 
@@ -8500,10 +8563,10 @@
             if (success) {
               hideLoading();
               PetBrain.syncIdleCombo(model || fullModel);
-              showBubble('换了个新造型！好看吗？', 3000);
+              showBubble('换了个新造型！好看吗？', 2400);
             } else {
               showCSSFallback();
-              showBubble('模型加载失败，显示备用形象', 3000);
+              showBubble('模型加载失败，显示备用形象', 2400);
             }
             return;
           }
@@ -8529,7 +8592,7 @@
               currentModel = null; modelBaseW = 0; modelBaseH = 0;
             }
             if (!useLive2D) {
-              showBubble('Live2D引擎未加载，暂时无法换装', 3000);
+              showBubble('Live2D引擎未加载，暂时无法换装', 2400);
               return;
             }
             loadingText.textContent = '正在更换模型...';
@@ -8564,18 +8627,18 @@
                     setTimeout(() => { startBongocatMode(); }, 200);
                     showBubble('BongoCat 键盘猫已启动！打字和鼠标移动会有响应', 3500);
                   } else {
-                    showBubble('换了个新造型！好看吗？', 3000);
+                    showBubble('换了个新造型！好看吗？', 2400);
                   }
                 } catch (e) {
                   console.warn('[model:changed] 检测键盘图片失败:', e.message);
-                  showBubble('换了个新造型！好看吗？', 3000);
+                  showBubble('换了个新造型！好看吗？', 2400);
                 }
               } else {
-                showBubble('换了个新造型！好看吗？', 3000);
+                showBubble('换了个新造型！好看吗？', 2400);
               }
             } else {
               showCSSFallback();
-              showBubble('模型加载失败，显示备用形象', 3000);
+              showBubble('模型加载失败，显示备用形象', 2400);
             }
           } else if (model && model.id) {
             // 兼容：如果只收到 id，再查询完整信息
@@ -8591,10 +8654,10 @@
               if (success) {
                 hideLoading();
                 PetBrain.syncIdleCombo(model || fullModel);
-                showBubble('换了个新造型！好看吗？', 3000);
+                showBubble('换了个新造型！好看吗？', 2400);
               } else {
                 showCSSFallback();
-                showBubble('模型加载失败，显示备用形象', 3000);
+                showBubble('模型加载失败，显示备用形象', 2400);
               }
             } else if (fullModel && fullModel.modelFile && useLive2D) {
               // 从 MMD 切回 Live2D（仅收到 id 的情况）
@@ -8628,17 +8691,17 @@
                       setTimeout(() => { startBongocatMode(); }, 200);
                       showBubble('BongoCat 键盘猫已启动！打字和鼠标移动会有响应', 3500);
                     } else {
-                      showBubble('换了个新造型！好看吗？', 3000);
+                      showBubble('换了个新造型！好看吗？', 2400);
                     }
                   } catch (e) {
-                    showBubble('换了个新造型！好看吗？', 3000);
+                    showBubble('换了个新造型！好看吗？', 2400);
                   }
                 } else {
-                  showBubble('换了个新造型！好看吗？', 3000);
+                  showBubble('换了个新造型！好看吗？', 2400);
                 }
               } else {
                 showCSSFallback();
-                showBubble('模型加载失败，显示备用形象', 3000);
+                showBubble('模型加载失败，显示备用形象', 2400);
               }
             }
           }

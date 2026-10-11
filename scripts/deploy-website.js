@@ -67,6 +67,8 @@ function getAllFiles(dir, baseDir) {
   const entries = fs.readdirSync(dir, { withFileTypes: true });
   for (const entry of entries) {
     if (entry.name === '.git' || entry.name === 'node_modules') continue;
+    // 历史备份图不要上线（*_backup_*.png），既占仓库又容易让人以为官网没更新
+    if (entry.isFile() && /_backup_\d{8}\./.test(entry.name)) continue;
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       files.push(...getAllFiles(fullPath, baseDir));

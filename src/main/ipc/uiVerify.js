@@ -14,6 +14,8 @@
 const fs = require('fs');
 const path = require('path');
 const { app, desktopCapturer, screen } = require('electron');
+const VirtualDesktop = require('../virtualDesktop');
+const ScreenshotAuth = require('../screenshotAuth');
 
 let windowProvider = () => ({});
 
@@ -22,10 +24,87 @@ function setWindowProvider(fn) {
   if (typeof fn === 'function') windowProvider = fn;
 }
 
+// ===== 截屏前的统一闸门 =====
+// 2026-10-03 修复：不再切换桌面！之前用 withCloneForeground 切换桌面会导致
+// 用户桌面状态混乱（按键错位、点击异常），严重时只能重启电脑。
+// 现在截屏完全在当前桌面进行：
+//   - captureProgramWindow 用 desktopCapturer 抓窗口，找不到时自动回退 PrintWindow
+//   - captureAppWindow 抓本应用窗口
+//   都不需要切换桌面，不影响用户当前工作。
+// 闸门只做一件事：管理员授权检查。
+
+/**
+ * 截屏前的统一闸门。返回 { ok, result?, error?, cancelled? }
+ * @param {object} opts 原始截屏参数
+ * @param {Function} fn  真正的截屏逻辑
+ */
+async function gateAndRun(opts, fn) {
+  const o = opts || {};
+
+  // ① 授权（唯一关卡：不切换桌面，只检查管理员授权）
+  if (o.authorize !== false) {
+    if (!ScreenshotAuth.isAuthorized()) {
+      const auth = await ScreenshotAuth.requestAuthorization({
+        reason: o.reason || 'AI 申请截取屏幕画面以验证界面。'
+      });
+      if (!auth.ok) {
+        return {
+          success: false,
+          cancelled: !!auth.cancelled,
+          needAuth: !auth.cancelled,
+          error: auth.cancelled
+            ? '已取消截屏授权'
+            : ('截屏授权未通过：' + (auth.error || '未知原因'))
+        };
+      }
+    }
+  }
+
+  // ② 直接执行截屏逻辑（不切换桌面，不影响用户当前工作）
+  let result = null;
+  let failed = null;
+  try {
+    result = await fn();
+  } catch (e) {
+    failed = e;
+  }
+
+  if (failed) {
+    return { success: false, error: '截屏失败: ' + ((failed && failed.message) || String(failed)) };
+  }
+
+  // 把授权票据一并返回，渲染层可显示"已授权，剩余 xx 秒"
+  return {
+    success: true,
+    ...result,
+    switched: false,
+    degraded: false,
+    auth: ScreenshotAuth.status()
+  };
+}
+
 function shotsDir() {
   const dir = path.join(app.getPath('userData'), 'screenshots');
   try { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); } catch (e) { /* ignore */ }
   return dir;
+}
+
+/**
+ * 截图默认落盘目录（2026-10-02 修复"工作模式相关文件位置不对"）：
+ * - 已选项目工作目录（工作模式）→ <项目>/screenshots/，项目相关产物留在项目里，
+ *   不再散落到应用数据目录（用户实测：验证贪吃蛇大作战时截图落到了 D:\IT\浮灵饰界\data\screenshots）；
+ * - 未选项目 → 应用数据目录/screenshots/（原行为）。
+ * 目录创建失败时回退 shotsDir()，保证截图不丢。
+ */
+function shotsDirFor(workdir) {
+  if (workdir && typeof workdir === 'string' && workdir.trim()) {
+    try {
+      const dir = path.join(workdir.trim(), 'screenshots');
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    } catch (e) { /* 创建失败回退默认目录 */ }
+  }
+  return shotsDir();
 }
 
 function stamp() {
@@ -34,10 +113,10 @@ function stamp() {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
-function savePng(buffer, savePath) {
+function savePng(buffer, savePath, workdir) {
   const file = savePath && path.isAbsolute(savePath)
     ? savePath
-    : path.join(shotsDir(), (savePath || ('shot-' + stamp())) + (String(savePath || '').endsWith('.png') ? '' : '.png'));
+    : path.join(shotsDirFor(workdir), (savePath || ('shot-' + stamp())) + (String(savePath || '').endsWith('.png') ? '' : '.png'));
   const dir = path.dirname(file);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(file, buffer);
@@ -94,8 +173,13 @@ function pickAppWindow(which) {
 /**
  * 抓本应用自身窗口（「被验证的程序」通常就是他自己）。
  * 支持 which = 逻辑名（main / pet / editor / debugLog …）或标题片段。
+ * 走统一闸门：管理员授权 + 虚拟桌面环境。
  */
-async function captureAppWindow({ which = 'main', savePath } = {}) {
+async function captureAppWindow(opts = {}) {
+  return gateAndRun(opts, () => doCaptureAppWindow(opts));
+}
+
+async function doCaptureAppWindow({ which = 'main', savePath, workdir } = {}) {
   const picked = pickAppWindow(which);
   if (picked.error) return { success: false, error: picked.error, available: picked.available || listAppWindows() };
   const { win, which: usedWhich, fallback } = picked;
@@ -117,7 +201,7 @@ async function captureAppWindow({ which = 'main', savePath } = {}) {
       return { success: false, error: '窗口 "' + usedWhich + '" 捕获到空图像（可能被最小化或尚未渲染完成）' };
     }
     const size = image.getSize();
-    const file = savePng(image.toPNG(), savePath);
+    const file = savePng(image.toPNG(), savePath, workdir);
     return {
       success: true,
       which: usedWhich,
@@ -131,12 +215,16 @@ async function captureAppWindow({ which = 'main', savePath } = {}) {
     return { success: false, error: '截图失败: ' + (e && e.message ? e.message : String(e)) };
   }
 }
-
 /**
  * 按标题抓「另一个程序」的窗口（被验证的程序不是本应用时用这个）。
  * 走 desktopCapturer，返回该窗口当前画面。
+ * 走统一闸门：管理员授权 + 虚拟桌面环境。
  */
-async function captureProgramWindow({ title, index = 0, savePath } = {}) {
+async function captureProgramWindow(opts = {}) {
+  return gateAndRun(opts, () => doCaptureProgramWindow(opts));
+}
+
+async function doCaptureProgramWindow({ title, index = 0, savePath, workdir } = {}) {
   if (!title) return { success: false, error: '需要提供 title（目标窗口标题的关键字）' };
   try {
     const primary = screen.getPrimaryDisplay();
@@ -150,6 +238,32 @@ async function captureProgramWindow({ title, index = 0, savePath } = {}) {
     const needle = String(title).toLowerCase();
     const matched = sources.filter(s => (s.name || '').toLowerCase().includes(needle));
     if (!matched.length) {
+      // ★ 回退：desktopCapturer 找不到 → 窗口可能在另一个虚拟桌面（如 AI 桌面分身）。
+      //   用 PrintWindow 直接按 hwnd 抓取，不需要窗口在前台、不需要切换桌面。
+      const ComputerControl = require('../computerControl');
+      const found = ComputerControl.findWindow(title);
+      if (found && found.hwnd) {
+        const shot = await ComputerControl.captureWindowByHwnd(found.hwnd, savePath || undefined);
+        if (shot.success) {
+          return {
+            success: true,
+            matched: found.title || title,
+            matchedCount: 1,
+            path: shot.path,
+            width: shot.width,
+            height: shot.height,
+            captureMode: 'printwindow',
+            note: '窗口不在当前桌面（可能在 AI 桌面分身中），已用 PrintWindow 后台抓取'
+          };
+        }
+        // PrintWindow 也失败了，返回错误 + 候选窗口
+        return {
+          success: false,
+          error: 'desktopCapturer 未找到该窗口（可能在另一个桌面），PrintWindow 抓取也失败：' + (shot.error || '未知'),
+          candidates: sources.map(s => s.name).filter(Boolean).slice(0, 40)
+        };
+      }
+      // findWindow 也找不到，返回原来的错误
       return {
         success: false,
         error: '没有标题包含「' + title + '」的窗口',
@@ -162,14 +276,15 @@ async function captureProgramWindow({ title, index = 0, savePath } = {}) {
       return { success: false, error: '窗口「' + src.name + '」画面为空（可能已最小化或受保护）' };
     }
     const size = image.getSize();
-    const file = savePng(image.toPNG(), savePath);
+    const file = savePng(image.toPNG(), savePath, workdir);
     return {
       success: true,
       matched: src.name,
       matchedCount: matched.length,
       path: file,
       width: size.width,
-      height: size.height
+      height: size.height,
+      captureMode: 'desktopcapturer'
     };
   } catch (e) {
     return { success: false, error: '抓取程序窗口失败: ' + (e && e.message ? e.message : String(e)) };
@@ -446,5 +561,10 @@ module.exports = {
   captureAppWindow,
   captureProgramWindow,
   runUiAudit,
-  shotsDir
+  shotsDir,
+  shotsDirFor,
+  // 供 main.js 注册 IPC 用
+  gateAndRun,
+  listDesktops: () => VirtualDesktop.listDesktops(),
+  authStatus: () => ScreenshotAuth.status()
 };

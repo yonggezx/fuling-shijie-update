@@ -1,0 +1,242 @@
+# ============================================================================
+# resource_index.yaml —— 配置资源清单
+# ============================================================================
+# 规范语义：**声明 agent-config/ 下每个文件是什么、给谁用、能不能进 AI 上下文**。
+# 这张表是「自描述」的：体检脚本（scripts/check-agent-config.js）按这里遍历，
+# 不再在脚本里硬编码文件名；将来加一个新配置文件，只改这张表，体检自动覆盖。
+#
+# ⚠️ 本文件本身**永不进 AI 上下文**，只被加载器和体检脚本消费。
+# ============================================================================
+version: 1
+
+# 加载优先级：用户目录（userData/agent-config）> 出厂目录（随 asar 打包）
+loadOrder:
+  - factory   # src/main/agent-config/，随包发布，升级会被覆盖
+  - user      # userData/agent-config/，用户手改不会被升级冲掉
+
+resources:
+  # --------------------------------------------------------------------------
+  - id: core
+    file: core.md
+    format: markdown
+    title: Agent 系统提示词
+    description: LLM 常驻系统提示。硬性规则（语言、执行原则、验证规范）。
+    exposeToAI: true
+    tokenCost: high# 占上下文最大头，改一个字都直接影响每次调用成本
+    consumers:
+      - src/main/ipc/aiOps.js      # AGENT_SYSTEM_PROMPT
+    required: true
+    minLength: 200
+    rules:
+      - noTemplateInterpolation    # 不能有 ${}，必须能静态加载
+      - noSecrets                 # 不含密钥/凭证
+    notes: >-
+      规则性内容留在这里；「怎么答」的示范放 examples.yaml。
+      两者混在一起会导致规则被示例淹没。
+
+  # --------------------------------------------------------------------------
+  - id: tools
+    file: tools.yaml
+    format: yaml
+    title: 工具 schema
+    description: OpenAI function calling 格式的 33 个工具定义。
+    exposeToAI: true
+    tokenCost: high                # 全量注入很贵，靠 toolsForAI() 裁剪
+    consumers:
+      - src/main/ipc/aiOps.js      # AGENT_TOOLS
+    required: true
+    shape:
+      root: tools
+      type: array
+      minItems: 1
+      itemPath: function.name
+    rules:
+      - uniqueItemNames
+      - namesMustHaveLabel          # 每个工具都要有展示名
+      - policyRefsMustExist         # policy.yaml 引用的工具必须真实存在
+      - noSecrets
+    notes: >-
+      不要把 33 个 schema 全量塞给模型。toolsForAI(enabledNames) 按启用名单裁剪，
+      这是最主要的 token 治理手段。
+
+  # --------------------------------------------------------------------------
+  - id: roles
+    file: roles.yaml
+    format: yaml
+    title: 预设角色
+    description: 6 个角色的展示信息、可用工具名单、专属 systemPrompt。
+    exposeToAI: partial             # 只有被选中角色的 systemPrompt 才进上下文
+    tokenCost: medium
+    consumers:
+      - src/main/ipc/aiOps.js      # PRESET_AGENT_ROLES
+    required: true
+    shape:
+      root: presetRoles
+      type: array
+      minItems: 1
+      itemPath: id
+    rules:
+      - uniqueItemNames
+      - referencedToolsMustExist
+      - noSecrets
+
+  # --------------------------------------------------------------------------
+  - id: policy
+    file: policy.yaml
+    format: yaml
+    title: 安全策略
+    description: 风险工具、需确认工具、白名单、工具依赖、识别类工具。
+    exposeToAI: false                # 权限拦截是主进程的事，模型不需要知道
+    tokenCost: none
+    consumers:
+      - src/main/ipc/aiOps.js      # RISKY_TOOLS / TOOLS_ALWAYS_ALLOWED / ...
+    required: true
+    rules:
+      - policyRefsMustExist         # 不能引用不存在的工具（幽灵权限）
+      - noSecrets
+
+  # --------------------------------------------------------------------------
+  - id: tool-labels
+    file: tool-labels.yaml
+    format: yaml
+    title: 工具展示名
+    description: 内部函数名 → 人类可读展示名，界面脱敏的唯一依据。
+    exposeToAI: false
+    tokenCost: none
+    consumers:
+      - src/main/ipc/aiOps.js      # toolLabelCN
+      - src/renderer/js/app.js     # TOOL_LABELS（需与主进程保持一致）
+    required: true
+    rules:
+      - everyToolHasLabel           # 有工具没展示名就会漏出原名
+      - matchRendererTable          # 主进程与渲染层必须逐字一致
+      - labelNotEqualToName         # 展示名不能等于原函数名（等于没脱敏）
+      - noFallbackToRawName         # 未登记时用通用占位，不回退原名
+
+  # --------------------------------------------------------------------------
+  - id: transform
+    file: transform.yaml
+    format: yaml
+    title: 文本加工规则
+    description: >-
+      token 估算系数、截断/压缩预算、上下文水位、敏感信息遮蔽规则。
+      原先硬编码在 app.js 与 aiOps.js 的两套常数，现在统一在这里。
+    exposeToAI: false
+    tokenCost: none
+    consumers:
+      - src/main/ipc/aiOps.js# approxTokens 系数、getContextMeta 下发
+      - src/renderer/js/app.js     # 经 ai:get-context-meta 读取截断预算
+    required: false                  # 缺失时回落到代码内默认常量，不阻断启动
+    rules:
+      - redactPatternsMustCompile
+      - noSecrets
+
+  # --------------------------------------------------------------------------
+  - id: examples
+    file: examples.yaml
+    format: yaml
+    title: Few-shot 示例库
+    description: >-
+      好/坏答案对照示例（收尾总结风格、简单任务不过度规划、改完要验证、
+      工具失败要换路、中文程序名不猜 exe）。按priority 注入，受 maxInjected 限制。
+    exposeToAI: true
+    tokenCost: medium               # 受 maxInjected 约束，不是全量进
+    consumers:
+      - src/main/ipc/aiOps.js      # buildAgentPrompt() → renderExamples()
+    required: false
+    rules:
+      - uniqueItemNames
+      - injectedWithinBudget
+
+  # --------------------------------------------------------------------------
+  - id: mcp-servers
+    file: mcp-servers.yaml
+    format: yaml
+    title: MCP 服务器清单
+    description: >-
+      外部 MCP 工具服务器的选型与启动配置：命令/参数、传输方式、推荐度、
+      工具展示名映射、密钥占位、安全约束，以及明确不接入的 server 及原因。
+    exposeToAI: false                # 只被 mcpManager 与体检脚本消费
+    tokenCost: none
+    consumers:
+      - src/main/mcp/mcpManager.js # load() / startServer() / collectTools()
+      - src/main/mcp/mcpClient.js        # 进程与协议实现
+    required: false                  # 缺失时降级为「无 MCP 服务器」，内置 33 工具照常工作
+    shape:
+      root: servers
+      type: array
+    rules:
+      - commandsInAllowlist          # command 必须落在 security.allowedCommands 内
+      - noSecrets                     # 密钥只写 ${secret:KEY} 占位
+    notes: >-
+      MCP 等于启动外部进程，权限面比内置工具大得多，所以：① 命令白名单；
+      ② 一律不自动启用，必须用户在设置里勾选；③ 会话模式硬阻断；
+      ④ 密钥只走 credentialStore（safeStorage），yaml 里只留占位。
+
+  # --------------------------------------------------------------------------
+  - id: connectors
+    file: connectors.yaml
+    format: yaml
+    title: 连通器目录
+    description: >-
+      需要用户授权的外部服务清单：官方名称、品牌色、授权流程
+      （oauth=标准授权端点可自动回调 / console=无标准端点需自助开通 / none=无需授权）、
+      授权页地址、申请到的 scope、凭证存储键。**授权一律跳浏览器**，不在应用里粘贴密钥。
+    exposeToAI: false                # 只被主进程 connectors.js 与体检脚本消费
+    tokenCost: none
+    consumers:
+      - src/main/ipc/connectors.js     # listConnectors / beginOAuth / saveCredential
+      - src/renderer/js/connector-ui.js
+    required: false                  # 缺失时连通器入口显示为空，不影响其他功能
+    shape:
+      root: connectors
+      type: array
+    rules:
+      - everyHasOfficialName          # 必须有官方名称（用户要认得出）
+      - noIconField                   # 图标统一用曲别针线条，配置里不该再有各家官方字形
+      - everyHasBrandColor
+      - authFlowValid                 # authFlow ∈ {oauth, console, none}
+      - noPasteTokenMethod            # 不该再有 manual-token / api-key
+      - allCanJumpBrowser             # 需授权的必须有 https 授权页
+      - consoleNeedsExplanation       # console 流程必须在 note 里说明为何仍需填凭证
+      - nonNoneNeedsSecretKey         # 需授权的必须给凭证存储键
+      - callbackPortInAllowlist       # 解析后的回调端口必须在 callbackPorts 白名单内
+      - noSecrets                     # 密钥只写占位
+    notes: >-
+      与 mcp-servers.yaml 的分工：MCP 是本机子进程（stdio），连通器是外部账号（HTTP）。
+      授权状态就是连通器可用性的前提 —— 没授权 = 调不通。
+      页面层级：列表页（全部连通器）→ 详情页（只显示所选的那一个，标题栏有返回按钮）。
+
+# ── 不在本索引管辖范围的文件 ────────────────────────────────────────────────
+# 凭证不进配置目录，走独立加密存储（safeStorage/DPAPI）。
+# MCP 运行时不是文件而是子进程，也归在这里。
+externalResources:
+  - id: credentials
+    title: 凭证与密钥
+    location: "userData/secrets/*.enc"
+    storage: safeStorage# Windows DPAPI，按当前用户加密
+    managedBy: src/main/config/credentialStore.js
+    exposeToAI: false
+    forbiddenIn: all                # 任何配置文件里都不许出现
+    note: >-
+      safeStorage 不可用时宁可写入失败，也不静默降级成明文落盘。
+      supabaseAuth.js 兼容读取历史明文并在加密写入成功后删除残留。
+  - id: mcp-runtime
+    title: MCP 服务器运行时
+    location: "用户配置的外部进程（stdio 子进程）"
+    managedBy: src/main/mcp/mcpManager.js
+    exposeToAI: false
+    note: >-
+      MCP 不是配置文件而是**活着的子进程**，所以另立一条。
+      权限面比内置工具大：命令白名单 + 默认关闭 + 一律弹窗确认 + 退出时强制回收
+      （app 'will-quit' 调stopAllSync，避免留孤儿进程）。
+
+# ── 尚未落地的规范项 ───────────────────────────────────────────────────────
+# 保留占位，避免以后忘了。这里列的都是「已评估、有明确阻塞原因」的项。
+notImplemented:
+  - id: runtime-db
+    title: runtime.db（运行时状态库）
+    blocker: better-sqlite3 未安装（需原生重编译，Electron ABI 不匹配）
+    alternatives: >-
+      短期用 data/ 下的 JSON 文件承担（agent_roles.json 等已在用）。
+      若确实需要 SQL 语义再引入，届时单独评估预编译二进制方案。

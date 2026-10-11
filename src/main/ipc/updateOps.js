@@ -2,7 +2,7 @@
 const path = require('path');
 const https = require('https');
 const http = require('http');
-const { app } = require('electron');
+const { app, BrowserWindow } = require('electron');
 
 // ========== 更新源配置 ==========
 // 更新源使用 GitHub。注意：默认分支是 main，不是 master——写错会 404。
@@ -315,23 +315,31 @@ async function checkForUpdate() {
   const current = getCurrentVersion();
   try {
     const meta = await fetchJson(getMetaUrl());
+    // ★ 清单字段归一化：latest.json 历史/现状字段是 version，而本函数一直读 latestVersion。
+    //   若清单只有 version（无 latestVersion），补丁直连/链式匹配 p.to === meta.latestVersion 恒为 undefined，
+    //   补丁永远不会被检测到 → 这就是"大部分功能无法通过补丁包更新"的底层根因之一。
+    //   两种字段名都兼容，避免线上清单字段不一致导致补丁静默失效。
+    const latest = meta.latestVersion || meta.version;
     // 完整包信息：从独立的 full-install.json 获取，所有客户端通用
     let fullInstallInfo = null;
     try {
       const fullData = await fetchJson(FULL_INSTALL_URL);
       if (fullData && fullData.fullInstall) {
-        fullInstallInfo = { ...fullData.fullInstall, from: current, to: fullData.fullInstall.version };
+        // ★ isFullPackage 必须内联到条目本身：doUpdate 会把它作为 patches[0] 传给
+        //   updateDownload / updateApply，applyPatch 依赖 patchInfo.isFullPackage 才能
+        //   把它当完整安装包处理（拷贝为 installer 而非解压），否则会误当 zip 解压而失败。
+        fullInstallInfo = { ...fullData.fullInstall, from: current, to: fullData.fullInstall.version, isFullPackage: true };
       }
     } catch (e) {}
     // 同版本号但补丁内容已更新（内容指纹不同）→ 也提示更新（"小补丁不改版本号"）
-    if (compareVersions(current, meta.latestVersion) === 0) {
+    if (compareVersions(current, latest) === 0) {
       const installedSha = getInstalledSha256();
       const allPatches = meta.patches || [];
       // ★ 原来只认 p.sha256，而清单里字段是 checksum（"sha256:xxx"），
       //   导致 latestPatch 恒为 undefined → 同版本修复包永远检测不到 → 一直报"已是最新版本"。
       // 同版本刷新补丁：必须 from === to === current（避免误匹配到 1.0.4→1.0.5 这类已应用补丁）
       const latestPatch = allPatches.find(p =>
-        p.to === meta.latestVersion &&
+        p.to === latest &&
         (!p.from || p.from === current) &&
         patchContentHash(p)
       );
@@ -341,9 +349,9 @@ async function checkForUpdate() {
       if (latestPatch && latestHash && latestHash !== installedSha) {
         return {
           success: true, hasUpdate: true, currentVersion: current,
-          latestVersion: meta.latestVersion, releaseDate: meta.releaseDate || '',
+          latestVersion: latest, releaseDate: meta.releaseDate || '',
           changes: meta.changes || '', patches: [latestPatch], ignored: false,
-          channel: meta.channel || (isBetaVersion(meta.latestVersion) ? 'beta' : 'stable'),
+          channel: meta.channel || (isBetaVersion(latest) ? 'beta' : 'stable'),
           sameVersionRefresh: true, fullInstall: fullInstallInfo
         };
       }
@@ -357,9 +365,9 @@ async function checkForUpdate() {
           requiresFullInstall: true, isFullPackage: true, fullInstall: fullInstallInfo
         };
       }
-      return { success: true, hasUpdate: false, currentVersion: current, latestVersion: meta.latestVersion, fullInstall: fullInstallInfo };
+      return { success: true, hasUpdate: false, currentVersion: current, latestVersion: latest, fullInstall: fullInstallInfo };
     }
-    if (compareVersions(current, meta.latestVersion) > 0) {
+    if (compareVersions(current, latest) > 0) {
       // 当前版本高于补丁最新版，但完整包版本更高 → 提示完整包更新
       if (fullInstallInfo && compareVersions(fullInstallInfo.version, current) > 0) {
         return {
@@ -370,17 +378,17 @@ async function checkForUpdate() {
           requiresFullInstall: true, isFullPackage: true, fullInstall: fullInstallInfo
         };
       }
-      return { success: true, hasUpdate: false, currentVersion: current, latestVersion: meta.latestVersion, fullInstall: fullInstallInfo };
+      return { success: true, hasUpdate: false, currentVersion: current, latestVersion: latest, fullInstall: fullInstallInfo };
     }
     const allPatches = meta.patches || [];
     // 1. 优先直连补丁（current -> latest）
-    const direct = allPatches.find(p => p.from === current && p.to === meta.latestVersion);
+    const direct = allPatches.find(p => p.from === current && p.to === latest);
     if (direct) {
       return {
         success: true, hasUpdate: true, currentVersion: current,
-        latestVersion: meta.latestVersion, releaseDate: meta.releaseDate || '',
+        latestVersion: latest, releaseDate: meta.releaseDate || '',
         changes: meta.changes || '', patches: [direct], ignored: false,
-        channel: meta.channel || (isBetaVersion(meta.latestVersion) ? 'beta' : 'stable'),
+        channel: meta.channel || (isBetaVersion(latest) ? 'beta' : 'stable'),
         requiresFullInstall: !!direct.requiresFullInstall, fullInstall: fullInstallInfo
       };
     }
@@ -395,10 +403,10 @@ async function checkForUpdate() {
       const next = candidates[0];
       chain.push(next);
       cursor = next.to;
-      if (compareVersions(cursor, meta.latestVersion) >= 0) break;
+      if (compareVersions(cursor, latest) >= 0) break;
     }
-    if (chain.length > 0 && compareVersions(cursor, meta.latestVersion) < 0) {
-      const finalJump = allPatches.find(p => p.from === cursor && p.to === meta.latestVersion);
+    if (chain.length > 0 && compareVersions(cursor, latest) < 0) {
+      const finalJump = allPatches.find(p => p.from === cursor && p.to === latest);
       if (finalJump) { chain.push(finalJump); cursor = finalJump.to; }
     }
     if (chain.length === 0) {
@@ -411,13 +419,13 @@ async function checkForUpdate() {
           requiresFullInstall: true, isFullPackage: true, fullInstall: fullInstallInfo
         };
       }
-      return { success: true, hasUpdate: false, currentVersion: current, latestVersion: meta.latestVersion, note: '无可用更新路径', fullInstall: fullInstallInfo };
+      return { success: true, hasUpdate: false, currentVersion: current, latestVersion: latest, note: '无可用更新路径', fullInstall: fullInstallInfo };
     }
     return {
       success: true, hasUpdate: true, currentVersion: current,
-      latestVersion: meta.latestVersion, releaseDate: meta.releaseDate || '',
+      latestVersion: latest, releaseDate: meta.releaseDate || '',
       changes: meta.changes || '', patches: chain, ignored: false,
-      channel: meta.channel || (isBetaVersion(meta.latestVersion) ? 'beta' : 'stable'),
+      channel: meta.channel || (isBetaVersion(latest) ? 'beta' : 'stable'),
       requiresFullInstall: chain.some(p => p.requiresFullInstall),
       multiStep: chain.length > 1, fullInstall: fullInstallInfo
     };
@@ -506,7 +514,9 @@ function getDownloadsDir() { return downloadsDir; }
  */
 async function downloadFullPackage(fullInstall, onProgress) {
   const version = fullInstall.version || 'unknown';
-  const installerName = `AiLobster-Setup-v${version}.exe`;
+  // ★ 安装包用项目中文名称命名（与正式发布产物「浮灵饰界安装器_Setup_vX.X.X.exe」一致），
+  //   不再使用历史遗留的英文名 AiLobster-Setup-*。
+  const installerName = `浮灵饰界安装器_Setup_v${version}.exe`;
   const installerPath = path.join(downloadsDir, installerName);
   // ★ 先下载到临时文件，全部完成并校验通过后再重命名为正式安装包，
   //   避免下载中途/损坏的 .exe 被下载中心误判为「已完成」，点安装导致闪退。
@@ -732,17 +742,35 @@ function runInstallerAndQuit(installerPath) {
     if (st.size <= 0) {
       return { success: false, error: '安装包为空或未下载完成' };
     }
-    // 用 detached PowerShell 启动安装器，等待安装完成后自动删除安装包
-    // 父进程退出后 PowerShell 继续运行，安装完成后清理安装包
-    const psCmd = `Start-Process -FilePath '${installerPath}' -Wait; Remove-Item -LiteralPath '${installerPath}' -Force -ErrorAction SilentlyContinue`;
-    const cleaner = spawn('powershell.exe', ['-NoProfile', '-WindowStyle', 'Hidden', '-Command', psCmd], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true
+    // ★ 直接只显示「浮灵饰界安装器」，其他什么都不显示：先立即隐藏所有应用窗口
+    try {
+      for (const w of BrowserWindow.getAllWindows()) { w.hide(); }
+    } catch (e) { /* 忽略：隐藏失败不阻断安装 */ }
+
+    // ★ 启动安装器本体（GUI 程序，与 electron-builder autoUpdater 同款做法）。
+    //   detached 让安装器独立存活（主进程意外退出也不影响安装）；
+    //   保留引用以监听其退出，安装完成后自动删除安装包再退出程序。
+    //   不再用失效的 PowerShell 链路（detached spawn powershell 时 -Command 不执行）。
+    const installer = spawn(installerPath, [], { detached: true, stdio: 'ignore' });
+
+    installer.on('error', (err) => {
+      console.error('[updateOps] 启动安装器失败:', err);
+      app.exit(1);
     });
-    cleaner.unref();
-    // 延迟退出，确保安装程序启动
-    setTimeout(() => { app.quit(); }, 500);
+
+    installer.on('exit', (code) => {
+      // 安装器退出：正常安装完成(exit 0)后自动删除安装包；
+      // 取消/失败(非0)则保留安装包，方便下次重装，但同样退出当前程序。
+      if (code === 0) {
+        try {
+          if (fs.existsSync(installerPath)) { fs.unlinkSync(installerPath); }
+        } catch (e) {
+          console.error('[updateOps] 删除安装包失败:', e);
+        }
+      }
+      app.exit(0);
+    });
+
     return { success: true };
   } catch (e) {
     return { success: false, error: e.message };
@@ -750,26 +778,59 @@ function runInstallerAndQuit(installerPath) {
 }
 
 const _patchedSessions = new Set();
+// ★ 补丁覆盖范围优化：把「相对应用根」的请求路径映射到补丁目录。
+//   旧实现只按 filePath 里是否含 "renderer" 子串来判断，导致：
+//     1) assets/ 下的 3D/MMD/live2d 引擎、图标、图片等完全无法补丁 → 大部分功能
+//        依赖这些资源，因而"无法通过补丁更新"；
+//     2) 用户路径里若恰好含 "renderer" 会误匹配。
+//   现改为：基于 app.getAppPath() 计算相对路径，覆盖 src/ 与 assets/ 下所有
+//   渲染进程加载的资源，同时向后兼容旧版 renderer/、main/ 前缀布局。
+function toPatchCandidates(rel) {
+  const out = [];
+  // 优先补丁内约定布局：src/main/→main/、src/renderer/→renderer/、assets/→assets/
+  if (rel.startsWith('src/main/')) { out.push(rel.substring('src/'.length), rel); }
+  else if (rel.startsWith('src/renderer/')) { out.push(rel.substring('src/'.length), rel); }
+  else { out.push(rel); } // assets/ 等原样
+  return out;
+}
+
 function setupPatchOverride(session) {
   if (_patchedSessions.has(session)) return; // 幂等：同一 session 只注册一次
   let applied = [];
   try { if (fs.existsSync(appliedFile)) applied = JSON.parse(fs.readFileSync(appliedFile, 'utf-8')); } catch (e) {}
   if (applied.length === 0) return;
 
+  // 应用资源根（打包后为 app.asar，开发时为项目根）
+  const appRoot = String(app.getAppPath() || '').replace(/\\/g, '/').replace(/\/+$/, '');
+
   const versions = [...applied].sort((a, b) => compareVersions(b, a));
   session.webRequest.onBeforeRequest((details, callback) => {
     const url = details.url;
     if (!url.startsWith('file://')) return callback({});
     let filePath;
-    try { filePath = decodeURIComponent(url.replace('file:///', '').replace('file://', '')); }
+    try { filePath = decodeURIComponent(url.replace(/^file:\/\/\//, '').replace(/^file:\/\//, '')); }
     catch (e) { return callback({}); }
-    const idx = filePath.indexOf('renderer');
-    if (idx === -1) return callback({});
-    const relPath = filePath.substring(idx);
+    // 去掉查询串 / 锚点
+    filePath = filePath.split(/[?#]/)[0];
+
+    const norm = filePath.replace(/\\/g, '/');
+    let rel = null;
+    if (appRoot && norm.startsWith(appRoot + '/')) {
+      rel = norm.substring(appRoot.length + 1);
+    } else {
+      // 兜底：兼容非标准路径（含 "renderer" 子串）
+      const idx = norm.indexOf('renderer');
+      if (idx !== -1) rel = norm.substring(idx);
+    }
+    if (!rel) return callback({});
+
+    const candidates = toPatchCandidates(rel);
     for (const ver of versions) {
-      const patchFile = path.join(patchesDir, ver, relPath);
-      if (fs.existsSync(patchFile)) {
-        return callback({ redirectURL: 'file:///' + patchFile.replace(/\\/g, '/') });
+      for (const cand of candidates) {
+        const patchFile = path.join(patchesDir, ver, cand);
+        if (fs.existsSync(patchFile)) {
+          return callback({ redirectURL: 'file:///' + patchFile.replace(/\\/g, '/') });
+        }
       }
     }
     callback({});
@@ -859,5 +920,6 @@ module.exports = {
   ignoreVersion, isVersionIgnored, getBackupList, rollbackToVersion,
   compareVersions, isBetaVersion, getPatchesDir: () => patchesDir,
   downloadFullPackage, getDownloadedPackages, deleteDownloadedPackage,
-  runInstallerAndQuit, setDownloadsDir, getDownloadsDir, getFullInstall
+  runInstallerAndQuit, setDownloadsDir, getDownloadsDir, getFullInstall,
+  toPatchCandidates
 };

@@ -1,4 +1,4 @@
-﻿/**
+/**
  * AI龙虾 - 账号系统（渲染进程 - 弹窗式）
  * 通过 IPC 调用主进程 Supabase 认证模块
  * 顶部按钮点击弹出登录/注册弹窗，个人信息、修改密码均为弹窗
@@ -12,11 +12,105 @@
   let isConfigured = false;
   let tempAvatarBase64 = null; // 临时存储上传的头像 base64
   
-  // 全局函数：处理头像图片加载失败
+  // 取名字的首个字符：中文取首字，英文取首字母大写，异常时退化为一个字
+  function avatarInitial(name) {
+    const s = String(name || '').trim();
+    if (!s) return '';
+    // 去掉邮箱域名部分，避免 @ 符号被当作首字
+    const base = s.indexOf('@') > 0 ? s.split('@')[0] : s;
+    if (!base) return '';
+    const first = Array.from(base)[0] || '';
+    // 英文/数字 → 转大写
+    if (/[a-z]/i.test(first)) return first.toUpperCase();
+    return first;
+  }
+
+  function avatarColor(name) {
+    const palette = [
+      ['#4fc3f7', '#1976d2'], ['#9575cd', '#512da8'], ['#4db6ac', '#00796b'],
+      ['#f06292', '#c2185b'], ['#ffb74d', '#ef6c00'], ['#7986cb', '#283593'],
+      ['#81c784', '#2e7d32'], ['#64b5f6', '#1565c0'], ['#a1887f', '#5d4037'],
+      ['#90a4ae', '#455a64']
+    ];
+    let hash = 0;
+    const s = String(name || '');
+    for (let i = 0; i < s.length; i++) hash = (hash * 31 + s.charCodeAt(i)) >>> 0;
+    return palette[hash % palette.length];
+  }
+
+  // 默认头像：用昵称/用户名/邮箱的首字生成的渐变字母圆盘，不再使用龙虾形象
+  function defaultAvatarHtml(user) {
+    const u = user || {};
+    const name = u.nickname || u.username || u.email || '';
+    const initial = avatarInitial(name);
+    const [c1, c2] = avatarColor(name || 'default');
+    const gid = 'av' + String(Math.abs((String(name) || 'x').length * 7919) % 99999);
+    return `<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;display:block;border-radius:50%;">`
+      + `<defs><linearGradient id="${gid}" x1="0" y1="0" x2="1" y2="1">`
+      + `<stop offset="0%" stop-color="${c1}"/><stop offset="100%" stop-color="${c2}"/>`
+      + `</linearGradient></defs>`
+      + `<rect width="64" height="64" rx="32" fill="url(#${gid})"/>`
+      + (initial
+        ? `<text x="32" y="33" text-anchor="middle" dominant-baseline="central" `
+          + `font-family="system-ui,-apple-system,'Segoe UI','Microsoft YaHei',sans-serif" font-size="30" `
+          + `font-weight="600" fill="#ffffff">${initial.replace(/[<>&"]/g, '')}</text>`
+        : `<circle cx="32" cy="24" r="11" fill="rgba(255,255,255,0.9)"/>`
+          + `<path d="M11 60c0-11.6 9.4-21 21-21s21 9.4 21 21z" fill="rgba(255,255,255,0.9)"/>`)
+      + `</svg>`;
+  }
+
+  window.__renderDefaultAvatar = function(el, user) {
+    if (!el) return;
+    el.innerHTML = defaultAvatarHtml(user || (window.AccountAPI && window.AccountAPI.getCurrentUser
+      ? window.AccountAPI.getCurrentUser() : null));
+  };
+
+  // ==================== 头像兜底（防「头像消失变默认」） ====================
+  // 背景：URL 型头像不落本地文件，网络抖动/图床失效时 <img> onerror 会立刻回落默认头像，
+  // 且旧实现一次失败就永久放弃。这里做三层防御：
+  //   1) 失败重试一次（仅 http(s)；data:/本地内容加查询串会失效，不重试）
+  //   2) localStorage 记住的「最后一次成功加载的 http(s) 头像」
+  //   3) 默认字母头像
+  function avatarCacheKey() {
+    const u = currentUser || (window.AccountAPI && window.AccountAPI.getCurrentUser());
+    return 'fs:lastAvatar:' + ((u && (u.id || u.email)) || 'unknown');
+  }
+  function rememberAvatar(url) {
+    try {
+      if (typeof url === 'string' && /^https?:/i.test(url)) localStorage.setItem(avatarCacheKey(), url);
+    } catch (e) { /* 忽略 */ }
+  }
+  function lastGoodAvatar() {
+    try { return localStorage.getItem(avatarCacheKey()) || ''; } catch (e) { return ''; }
+  }
+  function forgetAvatar() {
+    try { localStorage.removeItem(avatarCacheKey()); } catch (e) { /* 忽略 */ }
+  }
+
+  // 头像图片加载成功 → 记住最后一次可用的 http(s) 头像（data: 已由主进程落盘，无需记）
+  window.handleAvatarOk = function(img) {
+    try { if (img && img.src) rememberAvatar(img.src); } catch (e) { /* 忽略 */ }
+  };
+
+  // 头像图片加载失败 → 重试 → localStorage 兜底 → 默认字母头像
   window.handleAvatarError = function(img) {
-    if (img && img.parentElement) {
-      img.parentElement.innerHTML = DEFAULT_LOBSTER_AVATAR;
+    if (!img) return;
+    const src = img.getAttribute('src') || '';
+    // 第一层：瞬时网络抖动，重试一次
+    if (/^https?:/i.test(src) && !img.dataset.avatarRetried) {
+      img.dataset.avatarRetried = '1';
+      img.src = src + (src.indexOf('?') >= 0 ? '&' : '?') + 'ailr=' + Date.now();
+      return;
     }
+    // 第二层：本机记住的最后一次成功头像
+    const last = lastGoodAvatar();
+    if (last && src !== last && !img.dataset.avatarLastUsed) {
+      img.dataset.avatarLastUsed = '1';
+      img.src = last;
+      return;
+    }
+    // 第三层：默认字母头像（不再是龙虾）
+    if (img.parentElement) window.__renderDefaultAvatar(img.parentElement);
   };
   let saveProfileCooldown = false; // 保存个人资料的冷却状态
 
@@ -82,16 +176,6 @@
 
     bindEvents();
     updateTopBar();
-    updateAILock();
-  }
-
-  // ==================== AI 功能登录锁定（已永久解锁） ====================
-  function updateAILock() {
-    const lockOverlay = document.getElementById('ai-config-lock');
-    const lockIcon = document.getElementById('nav-lock-ai');
-    // 永久解锁：始终隐藏锁定遮罩和锁定图标
-    if (lockOverlay) lockOverlay.classList.add('hidden');
-    if (lockIcon) lockIcon.style.display = 'none';
   }
 
   // ==================== 事件绑定 ====================
@@ -103,10 +187,6 @@
     // 顶部用户头像
     const userAvatar = document.getElementById('top-user-avatar');
     if (userAvatar) userAvatar.addEventListener('click', () => openModal('profile'));
-
-    // AI 配置锁定遮罩的"立即登录"按钮
-    const aiLockLoginBtn = document.getElementById('ai-lock-login-btn');
-    if (aiLockLoginBtn) aiLockLoginBtn.addEventListener('click', () => openModal('login'));
 
     // 弹窗关闭按钮
     document.querySelectorAll('.account-modal-close').forEach(btn => {
@@ -318,7 +398,8 @@
         if (emailResult.success && emailResult.email) {
           email = emailResult.email;
         } else {
-          showModalMessage('用户名不存在', 'error');
+          // 优先透出主进程给出的具体原因（本机无记录 / 服务端查询不可用等）
+          showModalMessage(emailResult.error || '用户名不存在，请改用邮箱登录', 'error');
           btn.disabled = false;
           btn.innerHTML = '登录';
           return;
@@ -329,7 +410,6 @@
       if (result.success) {
         currentUser = result.user;
         updateTopBar();
-        updateAILock();
         
         // 检查是否勾选了自动登录
         const autoLoginCheckbox = document.getElementById('auto-login-checkbox');
@@ -402,7 +482,6 @@
       if (result.loggedIn) {
         currentUser = result.user;
         updateTopBar();
-        updateAILock();
         closeAllModals();
         showToast('GitHub 登录成功！欢迎回来');
       } else {
@@ -464,7 +543,6 @@
       if (result.success) {
         currentUser = null;
         updateTopBar();
-        updateAILock();
         closeAllModals();
         showToast('已退出登录');
       } else {
@@ -481,25 +559,31 @@
     // 不重置 tempAvatarBase64，保留用户未保存的临时头像选择
     document.getElementById('profile-nickname').value = currentUser.nickname || currentUser.username || '';
     document.getElementById('profile-username').value = currentUser.username || '';
-    document.getElementById('profile-email').textContent = currentUser.email || '';
+    // 显示当前邮箱（profile-email-display 是展示用 div，profile-email 是输入新邮箱的 input）
+    const emailDisplay = document.getElementById('profile-email-display');
+    if (emailDisplay) emailDisplay.textContent = currentUser.email || '';
+    // 清空"修改邮箱"输入框，等待用户输入新邮箱
+    const emailInput = document.getElementById('profile-email');
+    if (emailInput) emailInput.value = '';
     
     // 显示头像：如果有临时头像（未保存），显示临时头像；否则显示用户当前头像
     const profileAvatarDisplay = document.getElementById('profile-avatar-display');
     if (profileAvatarDisplay) {
+      const modalAvatar = currentUser.avatar_url || lastGoodAvatar();
       if (tempAvatarBase64) {
         // 有临时头像（本地图片或URL链接），保留显示
         profileAvatarDisplay.innerHTML = `<img src="${tempAvatarBase64}" alt="avatar" style="width:100%;height:100%;object-fit:cover;border-radius:50%;pointer-events:none;" onerror="handleAvatarError(this)">`;
-      } else if (currentUser.avatar_url) {
-        profileAvatarDisplay.innerHTML = `<img src="${currentUser.avatar_url}" alt="avatar" style="width:100%;height:100%;object-fit:cover;border-radius:50%;pointer-events:none;" onerror="handleAvatarError(this)">`;
+      } else if (modalAvatar) {
+        profileAvatarDisplay.innerHTML = `<img src="${modalAvatar}" alt="avatar" style="width:100%;height:100%;object-fit:cover;border-radius:50%;pointer-events:none;" onload="handleAvatarOk(this)" onerror="handleAvatarError(this)">`;
       } else {
-        profileAvatarDisplay.innerHTML = DEFAULT_LOBSTER_AVATAR;
+        profileAvatarDisplay.innerHTML = defaultAvatarHtml(currentUser);
       }
     }
     
     // 更新显示的昵称
     const profileNameDisplay = document.getElementById('profile-name-display');
     if (profileNameDisplay) {
-      profileNameDisplay.textContent = currentUser.nickname || currentUser.username || '用户';
+      profileNameDisplay.textContent = displayName(currentUser);
     }
   }
 
@@ -515,8 +599,8 @@
     const nickname = document.getElementById('profile-nickname').value.trim();
     const avatar_url = tempAvatarBase64 || currentUser.avatar_url || null;
 
-    // 用户名不可修改，使用当前用户的用户名
-    const username = currentUser.username;
+    // 用户名不可修改，使用当前用户的用户名（前端也做兜底，避免拿到空值）
+    const username = currentUser.username || (currentUser.email ? String(currentUser.email).split('@')[0] : '');
 
     const btn = document.getElementById('save-profile-btn');
     btn.disabled = true;
@@ -527,6 +611,8 @@
       if (result.success) {
         currentUser.nickname = nickname || username;
         currentUser.avatar_url = avatar_url;
+        // 同步本机头像记忆：设置了 http(s) 头像 → 记住；清空 → 忘掉，避免兜底显示已删除的头像
+        if (avatar_url) rememberAvatar(avatar_url); else forgetAvatar();
         tempAvatarBase64 = null; // 重置临时头像
         updateTopBar();
         // 更新显示的昵称
@@ -566,6 +652,12 @@
     try {
       const result = await window.api.supabase.updateEmail({ email });
       if (result.success) {
+        // 更新本地用户信息和显示
+        currentUser.email = email;
+        const emailDisplay = document.getElementById('profile-email-display');
+        if (emailDisplay) emailDisplay.textContent = email;
+        const emailInput = document.getElementById('profile-email');
+        if (emailInput) emailInput.value = '';
         showModalMessage(result.message, 'success');
       } else {
         showModalMessage('修改失败: ' + result.error, 'error');
@@ -652,8 +744,17 @@
     }
   }
 
-  // 默认龙虾 SVG 头像
-  const DEFAULT_LOBSTER_AVATAR = `<svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg"><ellipse cx="32" cy="36" rx="14" ry="18" fill="#E74C3C"/><ellipse cx="32" cy="20" rx="10" ry="8" fill="#C0392B"/><circle cx="28" cy="18" r="2.5" fill="#fff"/><circle cx="36" cy="18" r="2.5" fill="#fff"/><circle cx="28" cy="18" r="1.2" fill="#000"/><circle cx="36" cy="18" r="1.2" fill="#000"/><path d="M26 14 Q22 8 20 6" stroke="#C0392B" stroke-width="2" stroke-linecap="round" fill="none"/><path d="M38 14 Q42 8 44 6" stroke="#C0392B" stroke-width="2" stroke-linecap="round" fill="none"/><path d="M18 32 Q10 28 8 34 Q6 40 12 42 Q16 40 18 36" fill="#C0392B"/><path d="M46 32 Q54 28 56 34 Q58 40 52 42 Q48 40 46 36" fill="#C0392B"/><path d="M22 42 L18 48" stroke="#C0392B" stroke-width="2" stroke-linecap="round"/><path d="M26 46 L22 52" stroke="#C0392B" stroke-width="2" stroke-linecap="round"/><path d="M38 46 L42 52" stroke="#C0392B" stroke-width="2" stroke-linecap="round"/><path d="M42 42 L46 48" stroke="#C0392B" stroke-width="2" stroke-linecap="round"/><path d="M32 54 L28 60 L32 58 L36 60 Z" fill="#C0392B"/></svg>`;
+  // 顶部用户名显示优先级：昵称 > 用户名 > 邮箱（去掉域名）> 兜底文案
+  function displayName(user) {
+    const u = user || {};
+    if (u.nickname) return u.nickname;
+    if (u.username) return u.username;
+    if (u.email) {
+      const local = String(u.email).split('@')[0];
+      if (local) return local;
+    }
+    return '用户';
+  }
 
   // ==================== 更新顶部栏 ====================
   function updateTopBar() {
@@ -665,15 +766,16 @@
       if (loginBtn) loginBtn.style.display = 'none';
       if (userAvatar) {
         userAvatar.style.display = 'flex';
-        if (currentUser.avatar_url) {
-          userAvatar.innerHTML = `<img src="${currentUser.avatar_url}" alt="avatar" onerror="handleAvatarError(this)">`;
+        const topAvatar = currentUser.avatar_url || lastGoodAvatar();
+        if (topAvatar) {
+          userAvatar.innerHTML = `<img src="${topAvatar}" alt="avatar" style="width:100%;height:100%;object-fit:cover;border-radius:50%;" onload="handleAvatarOk(this)" onerror="handleAvatarError(this)">`;
         } else {
-          userAvatar.innerHTML = DEFAULT_LOBSTER_AVATAR;
+          userAvatar.innerHTML = defaultAvatarHtml(currentUser);
         }
       }
       if (userName) {
         userName.style.display = 'inline';
-        userName.textContent = currentUser.nickname || currentUser.username || '用户';
+        userName.textContent = displayName(currentUser);
       }
     } else {
       if (loginBtn) loginBtn.style.display = 'flex';

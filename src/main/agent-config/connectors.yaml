@@ -1,0 +1,371 @@
+# ============================================================================
+# connectors.yaml —— 需要授权的连通器目录
+# ============================================================================
+# 语义：**哪些外部服务需要用户授权才能用**，以及怎么授权。
+# 与 mcp-servers.yaml 的分工：
+#   mcp-servers.yaml → 通过 MCP 协议接进来的**工具服务器**（起子进程）
+#   connectors.yaml   → 通过 OAuth 直连的**外部数据服务**（走 HTTP 请求）
+#
+# 授权流程（用户要求：**一律跳浏览器授权，不在应用里粘贴密钥**）：
+#   1. 点「去授权」→ shell.openExternal 打开官方授权页
+#   2. 本地起 127.0.0.1:端口/callback 等回调，state 随机值防 CSRF
+#   3. 收到授权码 → 加密落盘（credentialStore / safeStorage）
+#
+# authFlow 两种：
+#   oauth   → 标准 OAuth 端点，授权完自动回调（绝大多数服务）
+#   console → 该服务没有标准 OAuth 端点，只能跳到开发者控制台自助开通
+#             （目前只有搜索类三家）。这类会在详情页额外显示令牌输入框并说明原因。
+#
+# 图标：统一用**曲别针线条图标**（见 src/renderer/js/connector-ui.js），
+#   不用各家官方字形 —— 官方 path 渲染出来大小不一，有的糊成色块。
+#   颜色承担识别作用：已连接=绿、待授权=灰。
+#
+# ⚠️ 本文件**永不进 AI 上下文**。密钥只经 credentialStore，明文不落盘。
+# ============================================================================
+version: 1
+
+# ── 授权方式 ────────────────────────────────────────────────────────────────
+authMethods:
+  oauth:
+    label: 浏览器授权
+    desc: 点击后跳转官方授权页，登录同意后自动回调本应用，无需粘贴密钥
+  console:
+    label: 官方控制台开通
+    desc: 该服务未提供标准授权端点，需前往开发者控制台自助开通后填入访问凭证
+  none:
+    label: 无需授权
+    desc: 开箱即用，不需要任何账号
+
+# ── OAuth 本地回调端口白名单 ────────────────────────────────────────────────
+# 各家官方文档指定的回调端口。只听这些端口，避免被内网机器扫到。
+callbackPorts:
+  - 8090
+  - 8091
+  - 8092
+  - 8765
+  - 9000
+  - 1455
+
+connectors:
+  # ═══════════════════════════════════════════════════════════════════════
+  # 开发协作
+  # ═══════════════════════════════════════════════════════════════════════
+  - id: github
+    name: GitHub
+    officialName: GitHub
+    category: dev
+    brandColor: "#2f81f7"
+    description: 读取仓库、Issue、PR、提交记录，可用于代码检索与协作跟踪
+    authMethod: oauth
+    authFlow: console
+    authorizeUrl: "https://github.com/settings/tokens"
+    docsUrl: "https://docs.github.com/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens"
+    secretKey: connector-github
+    scopes:
+      - repo
+      - read:user
+      - read:org
+      - read:public_key
+    note: 前往 GitHub Settings → Developer settings → Personal access tokens 创建令牌，粘贴到下方凭证框即可
+
+  - id: gitlab
+    name: GitLab
+    officialName: GitLab
+    category: dev
+    brandColor: "#fc6d26"
+    description: 读取项目、Issue、合并请求与流水线状态
+    authMethod: oauth
+    authFlow: console
+    authorizeUrl: "https://gitlab.com/-/profile/personal_access_tokens"
+    docsUrl: "https://docs.gitlab.com/ee/user/profile/personal_access_tokens.html"
+    secretKey: connector-gitlab
+    scopes:
+      - read_api
+      - read_repository
+      - read_user
+    note: 前往 GitLab 设置 → Access Tokens 创建个人访问令牌，粘贴到下方凭证框即可
+
+  - id: gitee
+    name: Gitee（码云）
+    officialName: Gitee
+    category: dev
+    brandColor: "#c71d23"
+    description: 读取国内代码仓库、Issue、PR。国内网络环境下比 GitHub 更可用
+    authMethod: oauth
+    authFlow: console
+    authorizeUrl: "https://gitee.com/profile/personal_access_tokens"
+    docsUrl: "https://gitee.com/help/articles/4191"
+    secretKey: connector-gitee
+    scopes:
+      - projects
+      - pull_requests
+      - issues
+      - notes
+      - user_info
+    note: 前往 Gitee 设置 → 私人令牌 创建访问令牌，粘贴到下方凭证框即可
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 办公协作（国内）
+  # ═══════════════════════════════════════════════════════════════════════
+  - id: feishu
+    name: 飞书
+    officialName: Feishu / Lark
+    category: office-cn
+    brandColor: "#00d6b9"
+    description: 云文档、多维表格、知识库、消息、日程与任务
+    authMethod: oauth
+    authFlow: oauth
+    authorizeUrl: "https://open.feishu.cn/app"
+    docsUrl: "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/authen-v1/authorize"
+    secretKey: connector-feishu
+    scopes:
+      - doc:document:readonly
+      - doc:document
+      - docs:doc:readonly
+      - docs:doc
+      - bitable:app:readonly
+      - bitable:app
+      - wiki:wiki:readonly
+      - wiki:wiki
+      - im:message
+      - im:message:send_as_bot
+      - calendar:calendar
+      - task:task
+      - contact:user.base:readonly
+    note: 前往飞书开放平台创建自建应用，在「凭证与基础信息」获取 App ID 与 App Secret，填入下方并开启所需权限
+
+  - id: dingtalk
+    name: 钉钉
+    officialName: DingTalk
+    category: office-cn
+    brandColor: "#3296fa"
+    description: 消息发送与读取、审批、日程、钉钉文档与多维表格
+    authMethod: oauth
+    authFlow: oauth
+    authorizeUrl: "https://login.dingtalk.com/oauth2/auth"
+    docsUrl: "https://open.dingtalk.com/document/orgapp/obtain-user-information"
+    secretKey: connector-dingtalk
+    scopes:
+      - openid
+      - corpid
+      - SmartGroup
+      - qyapi
+    note: 企业内部应用仅供企业内成员授权，无法所有人共用。请在详情页填入你自己的 App Key 与 App Secret
+
+  - id: wecom
+    name: 企业微信
+    officialName: WeCom
+    category: office-cn
+    brandColor: "#07c160"
+    description: 成员与部门通讯录、消息推送、审批流转
+    authMethod: oauth
+    authFlow: oauth
+    authorizeUrl: "https://open.work.weixin.qq.com/wwopen/sso/oauth2/authorize"
+    docsUrl: "https://developer.work.weixin.qq.com/document/path/91022"
+    secretKey: connector-wecom
+    scopes:
+      - snsapi_base
+      - snsapi_userinfo
+      - contact:user:readonly
+      - contact:department:readonly
+      - message:send
+      - approval:readonly
+    note: 需在企业微信管理后台创建自建应用，配置可信域名与回调接口
+
+  - id: tencent-docs
+    name: 腾讯文档
+    officialName: Tencent Docs
+    category: office-cn
+    brandColor: "#0052d9"
+    description: 云文档、表格、CSV 数据读写，适合与本地知识库配合
+    authMethod: oauth
+    authFlow: oauth
+    authorizeUrl: "https://docs.qq.com/open/oauth2/authorize"
+    docsUrl: "https://docs.qq.com/open/document.html"
+    secretKey: connector-tencent-docs
+    scopes:
+      - docs:read
+      - docs:write
+    note: 腾讯文档仅支持 OAuth 网页授权，需注册应用并在下方填入 client_id 后才能浏览器授权
+
+  - id: yuque
+    name: 语雀
+    officialName: Yuque
+    category: office-cn
+    brandColor: "#31c27c"
+    description: 个人知识库与团队文档读写
+    authMethod: oauth
+    authFlow: console
+    authorizeUrl: "https://www.yuque.com/settings/tokens"
+    docsUrl: "https://www.yuque.com/yuque/developer/api"
+    secretKey: connector-yuque
+    scopes:
+      - repo
+      - doc
+      - group
+    note: 前往语雀 设置 → 令牌 生成访问令牌，粘贴到下方凭证框即可
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 办公协作（海外）
+  # ═══════════════════════════════════════════════════════════════════════
+  - id: notion
+    name: Notion
+    officialName: Notion
+    category: office-global
+    brandColor: "#37352f"
+    description: 页面读写、数据库查询、知识库检索
+    authMethod: oauth
+    authFlow: console
+    authorizeUrl: "https://www.notion.so/my-integrations"
+    docsUrl: "https://developers.notion.com/docs/authorization"
+    secretKey: connector-notion
+    scopes:
+      - read
+      - write
+      - insert_comment
+    note: 前往 Notion My Integrations 创建内部集成，复制 Integration Token 粘贴到下方凭证框，并关联到要访问的页面
+
+  - id: slack
+    name: Slack
+    officialName: Slack
+    category: office-global
+    brandColor: "#4a154b"
+    description: 频道消息收发、群管理。国内网络访问受限
+    authMethod: oauth
+    authFlow: console
+    authorizeUrl: "https://api.slack.com/apps"
+    docsUrl: "https://api.slack.com/authentication/token-types"
+    secretKey: connector-slack
+    scopes:
+      - channels:read
+      - channels:history
+      - chat:write
+      - users:read
+    note: 前往 Slack API 创建应用，获取 Bot User OAuth Token（形如 xoxb-），粘贴到下方凭证框。国内网络访问受限，建议搭配代理
+
+  - id: jira
+    name: Jira
+    officialName: Jira
+    category: office-global
+    brandColor: "#0052cc"
+    description: 工单读写、Confluence 文档。适合团队开发流程
+    authMethod: oauth
+    authFlow: oauth
+    authorizeUrl: "https://auth.atlassian.com/authorize"
+    docsUrl: "https://developer.atlassian.com/cloud/jira/platform/3lo/"
+    secretKey: connector-jira
+    scopes:
+      - read:jira-work
+      - write:jira-work
+      - read:jira-user
+      - offline_access
+    note: Jira 仅支持 OAuth 网页授权，需注册应用并在下方填入 client_id 后才能浏览器授权
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 搜索 / 信息采集
+  # 说明：这三家只提供开发者控制台自助开通，没有标准 OAuth 授权端点，
+  #      所以 authFlow = console，详情页会额外显示令牌输入框。
+  # ═══════════════════════════════════════════════════════════════════════
+  - id: tavily
+    name: Tavily 搜索
+    officialName: Tavily
+    category: search
+    brandColor: "#0f9d58"
+    description: 联网搜索并返回精简网页摘要，适合需要最新信息的检索任务
+    authMethod: oauth
+    authFlow: console
+    authorizeUrl: "https://app.tavily.com/home"
+    docsUrl: "https://docs.tavily.com/"
+    secretKey: connector-tavily
+    scopes: []
+    note: 专为 AI 设计的搜索 API，返回结构化摘要，免费额度每月 1000 次
+
+  - id: brave-search
+    name: Brave 搜索
+    officialName: Brave Search
+    category: search
+    brandColor: "#fb542b"
+    description: 隐私优先的联网搜索，不记录用户查询
+    authMethod: oauth
+    authFlow: console
+    authorizeUrl: "https://api-dashboard.search.brave.com/app/keys"
+    docsUrl: "https://api-dashboard.search.brave.com/app/documentation/web-search/get-started"
+    secretKey: connector-brave
+    scopes: []
+    note: 隐私保护优先，不追踪用户搜索行为，免费额度每月 2000 次查询
+
+  - id: serpapi
+    name: SerpApi
+    officialName: SerpApi
+    category: search
+    brandColor: "#4285f4"
+    description: Google/Bing 等搜索结果的结构化抓取，适合需要精确 SERP 数据
+    authMethod: oauth
+    authFlow: console
+    authorizeUrl: "https://serpapi.com/users/api_key"
+    docsUrl: "https://serpapi.com/search-api"
+    secretKey: connector-serpapi
+    scopes: []
+    note: 返回 Google/Bing 等搜索引擎的结构化结果，适合 SEO 与竞品分析场景
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 云盘 / 存储
+  # ═══════════════════════════════════════════════════════════════════════
+  - id: onedrive
+    name: OneDrive
+    officialName: OneDrive
+    category: storage
+    brandColor: "#0078d4"
+    description: 访问 Microsoft 账号下的云文件
+    authMethod: oauth
+    authFlow: oauth
+    authorizeUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+    docsUrl: "https://learn.microsoft.com/graph/api/resources/drive"
+    secretKey: connector-onedrive
+    scopes: [Files.ReadWrite, offline_access, User.Read]
+    note: OneDrive 仅支持 OAuth 网页授权，需在 Microsoft Entra 注册应用并填入 client_id
+
+  - id: dropbox
+    name: Dropbox
+    officialName: Dropbox
+    category: storage
+    brandColor: "#0061ff"
+    description: 访问云端文件与共享链接
+    authMethod: oauth
+    authFlow: oauth
+    authorizeUrl: "https://www.dropbox.com/oauth2/authorize"
+    docsUrl: "https://www.dropbox.com/developers/documentation/http/documentation"
+    secretKey: connector-dropbox
+    scopes: [files.content.read, files.content.write, account_info.read]
+    note: Dropbox 仅支持 OAuth 网页授权，需在 App Console 创建应用并填入 client_id
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 无需授权（作为对照展示，也证明图标系统对「无状态」同样成立）
+  # ═══════════════════════════════════════════════════════════════════════
+  - id: builtin-web
+    name: 内置网页访问
+    officialName: Built-in Web Access
+    category: builtin
+    brandColor: "#ff5252"
+    description: 应用内置的网页搜索与抓取能力，无需任何授权，开箱即用
+    authMethod: none
+    authFlow: none
+    docsUrl: ""
+    secretKey: ""
+    scopes: []
+
+  - id: windows-mcp
+    name: Windows 界面控制
+    officialName: Windows MCP (C 原生)
+    category: builtin
+    brandColor: "#00bcd4"
+    description: >-
+      纯 C/Win32 重写的桌面控制 MCP：鼠标键盘注入、UIA 元素树快照、截图、
+      文件/注册表/进程操作、通知、网页抓取。无需账号，启停即可用。
+    authMethod: none
+    authFlow: none
+    kind: mcp                  # ← 启用/停用联动 mcpManager（对应 mcp-servers.yaml 里 id: windows-mcp）
+    mcpId: windows-mcp
+    docsUrl: ""
+    secretKey: ""
+    scopes: []

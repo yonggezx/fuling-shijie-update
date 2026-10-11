@@ -6,7 +6,8 @@
 // 2. 视觉与程序其它弹窗一致（深色半透明遮罩 + 圆角卡片 + 主题变量配色）。
 // 3. 【程序规范】弹窗不会因「点击空白处」关闭 —— 必须点击按钮，或按 ESC（视为取消）。
 //    避免误触丢失表单输入，也与原生系统弹窗行为解耦（不再出现 OS 风格对话框）。
-// 4. z-index 高于普通模态框（#modal-overlay z-index:1000），可在动作编辑器之上弹出确认框。
+// 4. z-index 为页面内最高层（高于安全中心弹窗 10000、动作编辑器、普通模态框等），
+//    确保从任意弹窗（含安全中心）内触发的确认框都显示在最上层、不会被遮住。
 (function () {
   'use strict';
 
@@ -32,9 +33,9 @@
   function ensureStyles() {
     if (document.getElementById(STYLE_ID)) return;
     const css = `
-.app-dialog-overlay{position:fixed;inset:0;z-index:3000;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;animation:appDialogFade .18s ease;outline:none}
+.app-dialog-overlay{position:fixed;inset:0;z-index:100001;background:var(--glass-overlay-bg,rgba(8,10,16,.55));backdrop-filter:blur(var(--glass-overlay-blur,14px)) saturate(130%);-webkit-backdrop-filter:blur(var(--glass-overlay-blur,14px)) saturate(130%);display:flex;align-items:center;justify-content:center;animation:appDialogFade .18s ease;outline:none}
 @keyframes appDialogFade{from{opacity:0}to{opacity:1}}
-.app-dialog{background:var(--bg-secondary,#1b1f27);border:1px solid var(--border-color,rgba(255,255,255,.14));border-radius:14px;min-width:280px;max-width:min(520px,calc(100vw - 32px));max-height:min(82vh,calc(100vh - 32px));display:flex;flex-direction:column;box-shadow:0 16px 48px rgba(0,0,0,.45);overflow:hidden;color:var(--text-primary,#e8e8ef);margin:16px}
+.app-dialog{background:var(--glass-panel-bg,linear-gradient(155deg,rgba(255,255,255,.10),rgba(255,255,255,.04) 40%,rgba(118,140,255,.07)));backdrop-filter:blur(var(--glass-panel-blur,28px)) saturate(160%);-webkit-backdrop-filter:blur(var(--glass-panel-blur,28px)) saturate(160%);border:1px solid var(--glass-panel-border,rgba(255,255,255,.16));border-radius:14px;min-width:280px;max-width:min(520px,calc(100vw - 32px));max-height:min(82vh,calc(100vh - 32px));display:flex;flex-direction:column;box-shadow:var(--glass-panel-shadow,0 20px 55px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.20));overflow:hidden;color:var(--text-primary,#e8e8ef);margin:16px}
 .app-dialog-header{display:flex;align-items:center;gap:10px;padding:18px 20px 0}
 .app-dialog-icon{flex:0 0 auto;width:22px;height:22px;display:inline-flex}
 .app-dialog-icon svg{width:100%;height:100%;display:block}
@@ -44,8 +45,8 @@
 .app-dialog-detail{margin-top:10px;white-space:pre-wrap;word-break:break-word;font-size:12px;color:var(--text-weak,#8a94a6);background:var(--bg-tertiary,rgba(127,127,127,.08));border:1px solid var(--border-color,rgba(255,255,255,.08));border-radius:8px;padding:8px 10px;max-height:160px;overflow:auto}
 .app-dialog-input{margin-top:14px;width:100%;box-sizing:border-box;padding:8px 10px;font:inherit;font-size:13px;color:var(--text-primary,#e8e8ef);background:var(--bg-tertiary,rgba(127,127,127,.08));border:1px solid var(--border-color,rgba(255,255,255,.14));border-radius:8px}
 .app-dialog-input:focus{outline:none;border-color:var(--accent,#36d6c3);box-shadow:0 0 0 2px var(--accent-glow,rgba(54,214,195,.25))}
-.app-dialog-footer{display:flex;justify-content:flex-end;gap:8px;padding:16px 20px 18px;flex:0 0 auto}
-.app-dialog-btn{height:34px;padding:0 18px;border-radius:8px;border:1px solid var(--border-color,rgba(255,255,255,.18));background:var(--bg-tertiary,rgba(127,127,127,.12));color:var(--text-primary,#e8e8ef);font-size:13px;cursor:pointer;transition:background .12s,border-color .12s,filter .12s}
+.app-dialog-footer{display:flex;justify-content:flex-end;gap:10px;padding:16px 20px 18px;flex:0 0 auto}
+.app-dialog-btn{height:34px;min-width:84px;padding:0 18px;border-radius:8px;border:1px solid var(--border-color,rgba(255,255,255,.18));background:var(--bg-tertiary,rgba(127,127,127,.12));color:var(--text-primary,#e8e8ef);font-size:13px;cursor:pointer;transition:background .12s,border-color .12s,filter .12s}
 .app-dialog-btn:hover{background:var(--bg-hover,rgba(255,255,255,.1))}
 .app-dialog-btn.primary{background:var(--accent,#36d6c3);border-color:var(--accent,#36d6c3);color:#06231f;font-weight:600}
 .app-dialog-btn.primary:hover{filter:brightness(1.08)}
@@ -102,6 +103,8 @@
     const primaryIndex = (typeof opts.primaryIndex === 'number') ? opts.primaryIndex : 0;
     const hasInput = !!inputCfg;
     const lite = !!opts.lite;
+    // returnIndex=true 时 resolve 被点击按钮的索引（ESC 返回 -1），供多按钮选择场景（如导出格式）区分取消与选项
+    const returnIndex = !!opts.returnIndex;
 
     return new Promise((resolve) => {
       const overlay = document.createElement('div');
@@ -146,11 +149,11 @@
       const onKey = (e) => {
         if (e.key === 'Escape') {
           e.preventDefault(); e.stopPropagation();
-          close(hasInput ? null : false);
+          close(hasInput ? null : (returnIndex ? -1 : false));
         } else if (e.key === 'Enter') {
           e.preventDefault();
           if (hasInput) close(inputEl.value.trim());
-          else close(true);
+          else close(returnIndex ? primaryIndex : true);
         }
       };
 
@@ -160,7 +163,7 @@
         b.textContent = label;
         b.addEventListener('click', () => {
           if (hasInput) close(i === primaryIndex ? inputEl.value.trim() : null);
-          else close(i === primaryIndex ? true : false);
+          else close(returnIndex ? i : (i === primaryIndex ? true : false));
         });
         footer.appendChild(b);
       });
@@ -204,6 +207,19 @@
       detail: opts && opts.detail,
       buttons: (opts && opts.buttons) || ['确定'],
       primaryIndex: 0,
+      lite: !!(opts && opts.lite)
+    }),
+    // 多按钮选择：返回被点击按钮的索引（0-based）；ESC 返回 -1。
+    // 供「导出格式」这类需要多个选项且可取消的弹窗使用，避免 confirm 的
+    // boolean 语义把「第二个选项」和「取消」混为一谈。
+    choose: (opts) => openDialog({
+      type: (opts && opts.type) || 'info',
+      title: opts && opts.title,
+      message: opts && opts.message,
+      detail: opts && opts.detail,
+      buttons: (opts && opts.buttons) || ['确定', '取消'],
+      primaryIndex: (opts && typeof opts.primaryIndex === 'number') ? opts.primaryIndex : 0,
+      returnIndex: true,
       lite: !!(opts && opts.lite)
     })
   };

@@ -21,25 +21,29 @@ const FileOps = require('./ipc/fileOps');
 const CommandOps = require('./ipc/commandOps');
 const InstallOps = require('./ipc/installOps');
 const AIOps = require('./ipc/aiOps');
+const EvolutionStore = require('./ipc/evolutionStore');
+const MarketplaceManager = require('./marketplace/marketplaceManager');
+const MultimodalAgent = require('./ipc/multimodalAgent');
 const UiVerify = require('./ipc/uiVerify');
+const VirtualDesktop = require('./virtualDesktop');
+const DesktopSession = require('./desktopSession');
+const ScreenshotAuth = require('./screenshotAuth');
+const PipWindow = require('./pipWindow');
 const ModelManager = require('./ipc/modelManager');
 const UpdateOps = require('./ipc/updateOps');
 
-// WaveIn 音频采集器（主进程采集，避免渲染进程崩溃）
-let WaveInRecorder = null;
-try {
-  WaveInRecorder = require('./waveInRecorder');
-  console.log('[Main] WaveInRecorder 加载成功');
-} catch (e) {
-  console.error('[Main] WaveInRecorder 加载失败:', e.message);
-}
-let activeRecorder = null;
+// 语音录制宿主：MCI 采集/WAV 转换跑在 worker 线程（原先同步跑在主线程，
+// 每次点击语音按钮 MCI 设备操作+重采样会冻结整个应用，2026-09-28 修复）
+const { VoiceRecorderHost } = require('./voiceRecorderHost');
+const voiceRecorderHost = new VoiceRecorderHost();
 const ElectronUpdater = require('./ipc/electronUpdater');
 const SupabaseAuth = require('./ipc/supabaseAuth');
 const ConfigManager = require('./configManager');
 const Changelog = require('./changelog');
 const GlobalKeyboard = require('./globalKeyboard');
 const GlobalMouse = require('./globalMouse');
+const SecurityCenter = require('./ipc/securityCenter');
+const Connectors = require('./ipc/connectors');
 
 // 任务栏透明化模块（Windows only，使用Explorer进程注入技术）
 let TaskbarInjector = null;
@@ -354,6 +358,16 @@ if (app.isPackaged) {
 if (!fs.existsSync(projectDataPath)) fs.mkdirSync(projectDataPath, { recursive: true });
 app.setPath('userData', projectDataPath);
 
+// ASR 模块管理器：Sherpa-ONNX + SenseVoiceSmall int8，模块式下载（2026-09-28）
+// 注意：必须放在 app.setPath 之后实例化，开发模式才能正确落到项目 data/ 目录
+const { AsrModuleManager } = require('./asrModuleManager');
+const asrModule = new AsrModuleManager({ userDataDir: app.getPath('userData') });
+asrModule.on('progress', (st) => {
+  for (const w of BrowserWindow.getAllWindows()) {
+    try { w.webContents.send('voice:asr-progress', st); } catch (_) {}
+  }
+});
+
 const userDataPath = projectDataPath;
 const configPath = path.join(userDataPath, 'config.json');
 const modelsPath = path.join(userDataPath, 'models');
@@ -370,12 +384,16 @@ try { require('./ipc/crashGuard').installCrashGuard({ logsPath }); } catch (e) {
 ConfigManager.init(configPath);
 ModelManager.init(modelsPath);
 AIOps.init(ConfigManager.getConfig().ai || {});
-// 长期记忆库：与 config.json 同目录，供 Agent 的 memory_* 工具与「AI 记忆」面板读写
-try { AIOps.initMemory(path.join(userDataPath, 'memory.json')); } catch (e) { console.warn('[Memory] 初始化失败:', e.message); }
+// 智能商城：本地（无服务器），技能/MCP/智能体下载、启用、导入。依赖 mcpManager 做 MCP 启停。
+try { MarketplaceManager.init({ userDataDir: userDataPath, factoryDir: path.join(__dirname, 'agent-config'), mcpManager: require('./mcp/mcpManager') }); } catch (e) { console.warn('[Marketplace] 初始化失败:', e.message); }
+// 长期记忆库：与 config.json 同目录，供 Agent 的 memory_* 工具与「AI 记忆」面板读写（Markdown）
+try { AIOps.initMemory(path.join(userDataPath, 'memory.md')); } catch (e) { console.warn('[Memory] 初始化失败:', e.message); }
 // 待办事项：按会话隔离，与 config.json 同目录
 try { AIOps.initTodo(path.join(userDataPath, 'todos.json')); } catch (e) { console.warn('[Todo] 初始化失败:', e.message); }
 // 本地 AI 模型推理引擎（非 Ollama：llama-server / 复用已在运行的本地服务）
 try { AIOps.initLocalEngine(path.join(logsPath, 'llama-server.log'), path.join(userDataPath, 'tools')); } catch (e) { console.warn('[LocalAI] 初始化失败:', e.message); }
+// 多模态 / 多 Agent 协同模块
+try { MultimodalAgent.init(AIOps); } catch (e) { console.warn('[MultimodalAgent] 初始化失败:', e.message); }
 // UI 自验证：把窗口句柄提供给 capture_window / verify_ui（这些 var 是 let，闭包按调用时取值）
 UiVerify.setWindowProvider(() => ({
   main: mainWindow,
@@ -580,6 +598,12 @@ function createPetWindow() {
   }
   petWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
+  // ★ BongoCat 输入防卡键：宠物窗口最小化/隐藏时清空按住状态并通知渲染端复位
+  // （参考 vladelaina/BongoCat 的"桌面/窗口切换清空按住"设计；锁屏/安全桌面由
+  //   globalKeyboard 内部检测自动清空）
+  petWindow.on('minimize', notifyBongoInputCleared);
+  petWindow.on('hide', notifyBongoInputCleared);
+
   // 始终启用前向模式的鼠标事件穿透
   // 渲染进程会根据像素透明度动态切换：透明区域穿透，模型像素捕获
   petWindow.setIgnoreMouseEvents(true, { forward: true });
@@ -693,13 +717,87 @@ function createPetWindow() {
   });
 }
 
+// ===== 窗口磨砂（真实模糊桌面）支持 =====
+// 主窗口【永远】以 backgroundMaterial:'acrylic' 创建（DWM backdrop 视觉随窗口诞生），
+// 磨砂开/关只切换页面透明度（渲染端 data-transparency → CSS 半透明/不透明底色），即时无感。
+// ⚠️ 实测结论（2026-09-28，Win11 26200 + Electron 28，scripts/test-live-frost-toggle.js）：
+//   - DWMSBT ACRYLIC→NONE 单向可用，但 NONE→ACRYLIC 切回 hr=0 却不渲染（DWM 不为
+//     已显示窗口重建 backdrop 视觉）；加 resize 抖动也没用 → 运行时切材质是死路。
+//   - SetWindowCompositionAttribute ACCENT_ENABLE_ACRYLICBLURBEHIND 在本 build 完全不渲染。
+//   - app.disableHardwareAcceleration() 会让系统 Acrylic 彻底失效（探针环境踩过坑）。
+// 所以磨砂「关」= 页面画满不透明底色盖住 backdrop（DWM 仍算一次模糊，代价可忽略）。
+let _dwmSetWindowAttribute = null;
+// DWM 圆角偏好：round=true → DWMWCP_ROUND(2)，round=false → DWMWCP_DONOTROUND(1)（直角，全屏时用）
+function applyDwmCorners(win, round) {
+  // DWM 背景/材质窗口不会自动圆角 → 强制 DWMWCP_ROUND/DONOTROUND
+  if (process.platform !== 'win32' || !win || win.isDestroyed()) return;
+  try {
+    if (!_dwmSetWindowAttribute) {
+      const koffi = require('koffi');
+      const dwm = koffi.load('dwmapi.dll');
+      _dwmSetWindowAttribute = dwm.func('long __stdcall DwmSetWindowAttribute(int64_t hwnd, uint32_t attr, void *value, uint32_t size)');
+    }
+    const buf = Buffer.alloc(4);
+    buf.writeUInt32LE(round ? 2 : 1); // DWMWCP_ROUND / DWMWCP_DONOTROUND
+    const hwndBuf = win.getNativeWindowHandle(); // Buffer 内容即 HWND 值
+    const hwnd = Number(hwndBuf.readBigUInt64LE(0));
+    const hr = _dwmSetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, buf.buffer.slice(buf.byteOffset, buf.byteOffset + 4), 4);
+    if (hr !== 0) console.warn('[Window] DWM 圆角设置返回 0x' + (hr >>> 0).toString(16));
+  } catch (e) {
+    console.warn('[Window] DWM 圆角设置失败:', e.message);
+  }
+}
+function applyDwmRoundCorners(win) { applyDwmCorners(win, true); }
+
+// 主窗口当前的磨砂状态（创建时决定；变更需重建窗口）
+let mainWindowFrost = false;
+
+// ===== 主窗口最大化/全屏策略（2026-09-30 定稿）=====
+// 历史实测（2026-09-29，scripts/test-frost-maximize{3,5,6}.js，受控条纹背景判定）：
+//   - 窗口一旦经历 maximize/unmaximize 状态切换，DWM 永久丢弃 Acrylic backdrop（纯黑），
+//     还原不自愈；13 种还原手段全部无效；
+//   - 「出生即 maximize」（show 前调用 maximize）的窗口玻璃完好——杀死 backdrop 的是
+//     状态切换过程，不是最大化状态本身。
+// 方案演进：
+//   ① 伪最大化（setBounds 填工作区）保玻璃 → 非真实最大化态，已废弃；
+//   ② 无感原生 maximize/unmaximize → 真最大化但玻璃永久丢失；
+//   ③ 重建式真最大化（以目标状态重建窗口）→ 真最大化+玻璃，但点一下整体重载，用户不满；
+//   ④ 现定稿：最大化按钮 = setFullScreen 真全屏（无感、玻璃保留）。
+//      - 最大化按钮与 F11 统一走真全屏——三得：真全屏 + 不重载 + 磨砂效果在。
+//      - setFullScreen 是原生窗口操作、无重载，且实测不伤 Acrylic 玻璃（实验 13/14/15）。
+// ⚠️ setMaximizable(false) 保留：阻止系统路径（drag 区原生双击/Win+Up/拖拽分屏）自动
+//    真最大化（会杀玻璃）。程序化 win.maximize() 会无视该标志（实验 4b 证实）。
+let mainWinRebuilding = false;   // 正在重建（仅初始创建过渡期，防止重入）
+let mainWinRestoreBounds = null; // 进入全屏前的窗口 bounds（用于全屏拖拽手动还原大小）
+
+// 主窗口是否处于「最大化/全屏」态：渲染端图标/状态判定统一走这里
+// （最大化按钮现已走 setFullScreen 真全屏，故把 isFullScreen 也纳入）
+function isMainWinMaximized() {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  return mainWindow.isFullScreen() || mainWindow.isMaximized();
+}
+
 function createMainWindow() {
-  mainWindow = new BrowserWindow({
+  mainWindowFrost = !!(ConfigManager.getConfig().system?.transparency);
+  spawnMainWindow({ maximized: false });
+}
+
+function spawnMainWindow(opts) {
+  const { maximized = false, prevBounds = null, fullscreen = false } = opts || {};
+  const old = mainWindow;
+  mainWinRebuilding = true;
+  const win = new BrowserWindow({
     width: 1100,
     height: 780,
     minWidth: 900,
     minHeight: 650,
+    x: prevBounds ? prevBounds.x : undefined,
+    y: prevBounds ? prevBounds.y : undefined,
     frame: false,
+    transparent: false, // acrylic 与 transparent:true 互斥
+    backgroundColor: '#00000000', // 透明底保住逐像素 alpha；磨砂关时由页面画满不透明底色
+    backgroundMaterial: 'acrylic',
+    show: false, // 等 ready-to-show 再显示，避免磨砂关时先闪一帧透明底
     title: '浮灵饰界 - 智能桌面助手',
     icon: getWindowIcon(),
     webPreferences: {
@@ -709,52 +807,171 @@ function createMainWindow() {
       sandbox: false
     }
   });
+  mainWindow = win;
+  if (maximized) win.maximize(); // show 之前最大化：出生即最大化，玻璃保留（实验 6 m0）
+  // 真全屏：实测（实验 13/14/15，壁纸 RGB 参照）setFullScreen 不伤 Acrylic 玻璃，
+  //   与普通窗口像素级一致，且「全屏↔还原」往返无损 → 无需重建窗口，直接切换即可。
+  //   出生即全屏（show 前 setFullScreen(true)）同样保玻璃，用于「从最大化态进入全屏」的场景。
+  if (fullscreen) win.setFullScreen(true);
+  // ⚠️ 禁止系统级最大化路径（拖拽分屏/drag 区原生双击/Win+Up），见上方注释
+  try { win.setMaximizable(false); } catch (e) {}
+  applyDwmRoundCorners(win);
 
-  mainWindow.setMenuBarVisibility(false);
-  UpdateOps.setupPatchOverride(mainWindow.webContents.session);
-  mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  win.setMenuBarVisibility(false);
+  UpdateOps.setupPatchOverride(win.webContents.session);
+  win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
   // ★ 后台运行优化：窗口隐藏时启用后台节流，限制CPU和渲染资源使用
-  mainWindow.webContents.setBackgroundThrottling(true);
+  win.webContents.setBackgroundThrottling(true);
 
   if (isDev) {
-    mainWindow.webContents.openDevTools();
+    win.webContents.openDevTools();
   }
 
-  mainWindow.on('close', (e) => {
-    // ★ 内存优化：关闭主窗口时真正销毁窗口，释放渲染进程资源
-    // 不再使用hide()隐藏到托盘，而是完全关闭，需要时通过托盘菜单重新创建
-    // 这样后台运行时只保留宠物窗口进程，内存占用与开机自启时一致
+  // 生产包禁用刷新/开发者工具快捷键：Ctrl+R / Ctrl+Shift+R / F5 / F12 / Ctrl+Shift+I
+  if (!isDev) {
+    win.webContents.on('before-input-event', (event, input) => {
+      const k = (input.key || '').toLowerCase();
+      if (input.control && input.shift && (k === 'r' || k === 'i' || k === 'j' || k === 'c')) { event.preventDefault(); return; }
+      if (input.control && (k === 'r' || k === 'f5')) { event.preventDefault(); return; }
+      if (k === 'f12') { event.preventDefault(); return; }
+    });
+    // 禁用右键菜单里的"检查"
+    win.webContents.on('context-menu', (e) => { e.preventDefault(); });
+  }
+
+  win.once('ready-to-show', () => {
+    if (win.isDestroyed()) return;
+    win.show();
+    // 新窗口已显示 → 切换完成，销毁旧窗口（destroy 不触发 close 事件，不发优化）
+    if (old && !old.isDestroyed()) old.destroy();
+    mainWinRebuilding = false;
+  });
+
+  win.on('close', (e) => {
+    // ★ 关闭主窗口 = 收进托盘（隐藏而非销毁）：
+    //   渲染进程常驻，正在跑的 AI 任务（agentChat 在主进程执行、通过 ai:response 向渲染层流式广播）
+    //   能继续在后台跑 —— 流式事件仍能送达隐藏的渲染层并最终落库，不会随窗口销毁而丢失；
+    //   桌面分身（owner 绑定主窗口 HWND）也不会因主窗口被销毁而丢失 owner 关系。
+    //   真正退出只走托盘「退出」（isQuitting=true），那时不拦截、窗口正常销毁并进入 will-quit。
     if (!isQuitting) {
-      // 不阻止关闭，让窗口真正销毁
-      // 关闭前先触发内存优化
-      console.log('[MemoryOptimizer] 主窗口关闭，释放渲染进程资源');
-      setTimeout(() => MemoryOptimizer.optimize(), 500);
+      e.preventDefault();
+      if (win.isVisible()) {
+        console.log('[Main] 主窗口关闭 → 隐藏到托盘（AI 可在后台继续执行）');
+        win.hide();
+      }
+      // 隐藏即触发一次内存优化，避免后台常驻吃太多资源（hide 事件也会再触发一次，幂等无害）
+      setTimeout(() => { try { MemoryOptimizer.optimize(); } catch (_) {} }, 1000);
     }
   });
 
   // ★ 窗口隐藏时触发内存优化（其他原因导致的隐藏）
-  mainWindow.on('hide', () => {
+  win.on('hide', () => {
     console.log('[MemoryOptimizer] 主窗口隐藏，触发内存优化');
     setTimeout(() => MemoryOptimizer.optimize(), 1000);
   });
 
-  mainWindow.on('closed', () => {
-    if (!isQuitting) {
+  win.on('closed', () => {
+    // ⚠️ 只清理当前引用（重建过渡期旧窗口销毁时 mainWindow 已指向新窗口）
+    if (!isQuitting && mainWindow === win) {
       mainWindow = null;
     }
   });
 
-  mainWindow.webContents.on('did-finish-load', () => {
-    mainWindow.webContents.send('init:config', ConfigManager.getConfig());
-    mainWindow.webContents.send('init:models', ModelManager.getModelList());
-    mainWindow.webContents.send('init:system-info', {
+  // ★ 桌面分身预览小窗跟随主窗口（用户要求"和聊天界面绑定"）：
+  //   主窗口移动/缩放/最大化/还原时重新量输入栏位置并推给宿主，小窗跟着聊天窗口走。
+  //
+  //   ⚠️ 两条通道，不能只留一条：
+  //   ① 拖动中（快，16ms）：只推**位移增量** dx/dy。输入栏相对主窗口的位置在拖动时不变，
+  //      不需要问渲染端 executeJavaScript（那是一次 IPC 往返 + 页面求值，拖动时必然滞后）。
+  //      宿主收到后直接 SetWindowPos 平移，小窗严丝合缝地贴着走。
+  //   ② 停手后（慢，200ms）：重新量一次真实输入栏矩形做校正（拖动中可能被 clamp、
+  //      缩放时宽度会变、最大化会换布局），顺便兜住非拖动的位置变化。
+  //   之前只有一条"每次防抖 160ms 后全量重量"，结果就是拖动时小窗"跟不上、像独立程序"。
+  let cloneMoveTimer = null;
+  let cloneAnchorTimer = null;
+  let lastAnchorRect = null;
+  let lastMoveB = null;   // 上一次 push 时的主窗口 bounds（只记 x/y/width/height）
+
+  const pushCloneDelta = () => {
+    try {
+      if (DesktopSession.status().state !== 'running') return;
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      const b = mainWindow.getBounds();
+      const prev = lastMoveB;
+      lastMoveB = { x: b.x, y: b.y, width: b.width, height: b.height };
+      if (!prev) return;                       // 第一帧没有基准，等校正通道
+      const dx = b.x - prev.x, dy = b.y - prev.y;
+      const dw = b.width - prev.width, dh = b.height - prev.height;
+      if (dx === 0 && dy === 0 && dw === 0 && dh === 0) return;
+      DesktopSession.moveClone(dx, dy, dw, dh);
+    } catch (_) { /* 忽略 */ }
+  };
+
+  const scheduleCloneReanchor = () => {
+    // 拖动中：每帧推增量（16ms 内多次调用会覆盖前一次，等价于节流到 ~60fps）
+    if (cloneMoveTimer) clearTimeout(cloneMoveTimer);
+    cloneMoveTimer = setTimeout(pushCloneDelta, 16);
+
+    // 停手后：全量校正
+    if (cloneAnchorTimer) clearTimeout(cloneAnchorTimer);
+    cloneAnchorTimer = setTimeout(async () => {
+      cloneAnchorTimer = null;
+      try {
+        if (DesktopSession.status().state !== 'running') return;
+        const r = await measureInputBarRect();
+        if (r) { lastAnchorRect = r; DesktopSession.reanchor(r); }
+        // 复位增量基准，避免下一次拖动把累计位移重复算进去
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          const b = mainWindow.getBounds();
+          lastMoveB = { x: b.x, y: b.y, width: b.width, height: b.height };
+        }
+      } catch (_) { /* 忽略 */ }
+    }, 200);
+  };
+  win.on('move', scheduleCloneReanchor);
+  win.on('resize', scheduleCloneReanchor);
+  win.on('maximize', scheduleCloneReanchor);
+  win.on('unmaximize', scheduleCloneReanchor);
+  win.on('restore', scheduleCloneReanchor);
+  win.on('show', scheduleCloneReanchor);
+
+  // 窗口最大化/还原状态变化时通知渲染进程（正常流程只会因程序化调用触发）
+  win.on('maximize', () => {
+    if (mainWindow === win && !win.isDestroyed()) win.webContents.send('window:state-changed', { maximized: true });
+  });
+  win.on('unmaximize', () => {
+    if (mainWindow === win && !win.isDestroyed()) win.webContents.send('window:state-changed', { maximized: false });
+  });
+  win.on('resize', () => {
+    if (mainWindow !== win || win.isDestroyed()) return;
+    // 最大化态变化也随 resize 通知渲染端（重建后新窗口状态一致性）
+    win.webContents.send('window:state-changed', { maximized: isMainWinMaximized() });
+  });
+
+  // 真全屏状态变化（含 F11/系统路径等原生切换）→ 通知渲染端更新按钮图标
+  // 全屏时圆角变直角（顶满屏幕），退出全屏恢复圆角
+  win.on('enter-full-screen', () => {
+    applyDwmCorners(win, false); // 直角
+    if (mainWindow === win && !win.isDestroyed()) win.webContents.send('window:state-changed', { maximized: isMainWinMaximized(), fullscreen: true });
+  });
+  win.on('leave-full-screen', () => {
+    applyDwmCorners(win, true); // 圆角
+    if (mainWindow === win && !win.isDestroyed()) win.webContents.send('window:state-changed', { maximized: isMainWinMaximized(), fullscreen: false });
+  });
+
+  win.webContents.on('did-finish-load', () => {
+    if (mainWindow !== win || win.isDestroyed()) return;
+    win.webContents.send('init:config', ConfigManager.getConfig());
+    win.webContents.send('init:models', ModelManager.getModelList());
+    win.webContents.send('init:system-info', {
       os: os.platform(),
       arch: os.arch(),
       cpuCount: os.cpus().length,
       totalMem: Math.round(os.totalmem() / 1024 / 1024 / 1024),
       hostname: os.hostname()
     });
+    win.webContents.send('window:state-changed', { maximized: isMainWinMaximized(), fullscreen: !!(mainWindow && mainWindow.isFullScreen()) });
   });
 }
 
@@ -894,10 +1111,10 @@ ipcMain.handle('disclaimer:accepted', () => {
 });
 
 ipcMain.handle('window:close-main', () => {
-  // ★ 内存优化：关闭主窗口时真正销毁窗口，释放渲染进程资源
-  // 不再使用hide()隐藏，而是完全关闭，需要时通过托盘菜单重新创建
+  // 关闭主窗口 = 收进托盘（由 mainWindow 的 'close' 处理器决定是否隐藏/销毁）。
+  // 非退出态下 'close' 会拦截并隐藏窗口，渲染进程常驻 → 正在跑的 AI 任务可在后台继续；
+  // 真正退出（isQuitting）时 'close' 不拦截，窗口正常销毁。
   if (mainWindow && !mainWindow.isDestroyed()) {
-    console.log('[MemoryOptimizer] 渲染进程请求关闭主窗口，释放渲染进程资源');
     mainWindow.close();
   }
 });
@@ -907,19 +1124,57 @@ ipcMain.handle('window:minimize', () => {
 });
 
 ipcMain.handle('window:maximize', () => {
-  if (!mainWindow) return false;
-  if (mainWindow.isMaximized()) {
-    mainWindow.unmaximize();
-    return false;
-  } else {
-    mainWindow.maximize();
-    return true;
-  }
+  if (!mainWindow || mainWinRebuilding) return isMainWinMaximized();
+  // 真全屏 + 无感 + 保留磨砂效果（2026-09-30 定稿）：
+  // 最大化按钮不再走系统 maximize（真最大化会永久杀 Acrylic 玻璃），改走 setFullScreen。
+  // setFullScreen 是原生操作、无重载，且实测不伤玻璃（实验 13/14/15）→ 三得。
+  const target = !mainWindow.isFullScreen();
+  if (target && mainWinRestoreBounds === null) mainWinRestoreBounds = mainWindow.getBounds(); // 进入全屏前记录原 bounds，供拖拽还原
+  mainWindow.setFullScreen(target);
+  return target;
 });
 
 ipcMain.handle('window:is-maximized', () => {
-  if (!mainWindow) return false;
-  return mainWindow.isMaximized();
+  return isMainWinMaximized();
+});
+
+// ===== 真全屏 =====
+// 无感原生全屏（2026-09-30 定稿）：实测 setFullScreen 不伤 Acrylic 玻璃（实验 13/14/15），
+// 全屏时 Windows 可能隐藏磨砂背衬，但还原自动回来 → 直接 setFullScreen，无重建、无重载。
+ipcMain.handle('window:fullscreen', (_e, force) => {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWinRebuilding) {
+    return mainWindow && !mainWindow.isDestroyed() ? mainWindow.isFullScreen() : false;
+  }
+  const target = (typeof force === 'boolean') ? force : !mainWindow.isFullScreen();
+  if (target && mainWinRestoreBounds === null) mainWinRestoreBounds = mainWindow.getBounds(); // 进入全屏前记录原 bounds，供拖拽还原
+  mainWindow.setFullScreen(target);
+  return target;
+});
+
+// 全屏拖拽还原：返回进入全屏前的窗口 bounds（用于手动还原大小）
+ipcMain.handle('window:get-restore-bounds', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+  return mainWinRestoreBounds ? { x: mainWinRestoreBounds.x, y: mainWinRestoreBounds.y, width: mainWinRestoreBounds.width, height: mainWinRestoreBounds.height } : null;
+});
+// 全屏拖拽还原：手动把窗口设成指定位置和大小（锁缩放下 setFullScreen 不会自动还原，需手动还原）
+ipcMain.on('window:set-bounds', (e, { x, y, width, height }) => {
+  const win = BrowserWindow.fromWebContents(e.sender);
+  if (win && !win.isDestroyed()) {
+    win.setBounds({ x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) });
+  }
+});
+
+ipcMain.handle('window:is-fullscreen', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  return mainWindow.isFullScreen();
+});
+
+// 窗口磨砂开关（无感切换）：主窗口永远以 acrylic 创建，磨砂开/关只由渲染端切换页面
+// 透明度（data-transparency → CSS），这里只记录状态，不再销毁重建窗口。
+// 渲染端已先把配置写入 ConfigManager（setConfig）并即时切好了 CSS。
+ipcMain.handle('window:set-transparency', (_e, enabled) => {
+  mainWindowFrost = !!enabled;
+  return { success: true, recreated: false, seamless: true };
 });
 
 // ===== 动作编辑器独立窗口控制（操作 actionEditorWindow，不影响主窗口）=====
@@ -1240,6 +1495,14 @@ ipcMain.handle('config:get', () => ConfigManager.getConfig());
 ipcMain.handle('config:set', (_e, config) => {
   const result = ConfigManager.setConfig(config);
   AIOps.init(ConfigManager.getConfig().ai || {});
+  // 主题/强调色实时联动到桌面分身（RdpHost 轮询 theme 文件重绘标题栏）
+  const sys = config?.system;
+  if (sys && (sys.theme || sys.accent)) {
+    try {
+      const cur = ConfigManager.getConfig().system || {};
+      DesktopSession.applyTheme(sys.theme || cur.theme || 'dark', sys.accent || cur.accent || 'red');
+    } catch (e) {}
+  }
   // 广播配置更新给所有窗口（确保主题等设置能同步到主窗口、动作编辑器等）
   const allWindows = [petWindow, mainWindow, actionEditorWindow];
   allWindows.forEach(win => {
@@ -1249,6 +1512,41 @@ ipcMain.handle('config:set', (_e, config) => {
   });
   return result;
 });
+// ========== 安全中心 IPC 通道 ==========
+ipcMain.handle('security:get-config', () => SecurityCenter.getConfig());
+ipcMain.handle('security:set-config', (_e, config) => SecurityCenter.setConfig(config));
+ipcMain.handle('security:get-status', () => SecurityCenter.getSecurityStatus());
+ipcMain.handle('security:check-command', (_e, command) => SecurityCenter.checkCommand(command));
+ipcMain.handle('security:check-file', (_e, filePath, operation) => SecurityCenter.checkFileOperation(filePath, operation));
+ipcMain.handle('security:check-network', (_e, url, method) => SecurityCenter.checkNetworkRequest(url, method));
+ipcMain.handle('security:scan-sensitive', (_e, text) => SecurityCenter.scanSensitive(text));
+ipcMain.handle('security:encrypt', (_e, text) => SecurityCenter.encryptText(text));
+ipcMain.handle('security:decrypt', (_e, text) => SecurityCenter.decryptText(text));
+// 纸篓
+ipcMain.handle('security:trash-list', (_e, type) => SecurityCenter.getTrashItems(type));
+ipcMain.handle('security:trash-add', (_e, item, type) => SecurityCenter.moveToTrash(item, type));
+ipcMain.handle('security:trash-restore', (_e, id) => SecurityCenter.restoreFromTrash(id));
+ipcMain.handle('security:trash-delete', (_e, id) => SecurityCenter.deleteFromTrash(id));
+ipcMain.handle('security:trash-clear', (_e, type) => SecurityCenter.clearTrash(type));
+// 审计日志
+ipcMain.handle('security:audit-list', (_e, filters) => SecurityCenter.getAuditLogs(filters || {}));
+ipcMain.handle('security:audit-export', (_e, format) => SecurityCenter.exportAuditLogs(format || 'json'));
+ipcMain.handle('security:audit-clear', (_e, filters) => SecurityCenter.clearAuditLogs(filters || {}));
+ipcMain.handle('security:audit-add', (_e, category, action, details, risk) => SecurityCenter.addAuditLog(category, action, details, risk));
+// 备份
+ipcMain.handle('security:backup-create', () => SecurityCenter.createBackup());
+ipcMain.handle('security:backup-list', () => SecurityCenter.getBackups());
+
+// ===== 连通器（需要授权的外部服务）=====
+ipcMain.handle('connector:list', () => Connectors.listConnectors());
+ipcMain.handle('connector:authorize', (_e, id, opts) => Connectors.beginOAuth(id, opts || {}));
+ipcMain.handle('connector:save-credential', (_e, id, token) => Connectors.saveCredential(id, token));
+ipcMain.handle('connector:set-client-id', (_e, id, clientId) => Connectors.setClientId(id, clientId));
+ipcMain.handle('connector:set-app-secret', (_e, id, secret) => Connectors.setAppSecret(id, secret));
+ipcMain.handle('connector:disconnect', (_e, id) => Connectors.disconnect(id));
+ipcMain.handle('connector:set-enabled', (_e, id, enabled) => Connectors.setConnectorEnabled(id, !!enabled));
+ipcMain.handle('connector:health-check', () => Connectors.healthCheck());
+ipcMain.handle('security:backup-delete', (_e, name) => SecurityCenter.deleteBackup(name));
 ipcMain.handle('config:reset', () => {
   const result = ConfigManager.resetConfig();
   AIOps.init(ConfigManager.getConfig().ai || {});
@@ -1664,20 +1962,57 @@ ipcMain.handle('ai:delete-cloud-provider', (_e, id) => AIOps.deleteCloudProvider
 ipcMain.handle('ai:fetch-provider-models', (_e, provider) => AIOps.fetchProviderModels(provider));
 ipcMain.handle('ai:chat', (_e, params) => AIOps.chat(params, broadcastToWindows));
 ipcMain.handle('ai:stream-chat', (_e, params) => AIOps.streamChat(params, broadcastToWindows));
-ipcMain.handle('ai:agent-chat', (_e, params) => AIOps.agentChat(params, broadcastToWindows));
+ipcMain.handle('ai:agent-chat', (_e, params) => AIOps.agentChat({ ...params, source: params?.source || 'work' }, broadcastToWindows));
 ipcMain.handle('ai:get-agent-tools', () => AIOps.getAgentTools());
 ipcMain.handle('ai:get-context-meta', () => AIOps.getContextMeta());
 ipcMain.handle('ai:cancel', () => { AIOps.cancelChat(); return { success: true }; });
 ipcMain.handle('ai:release-gpu', () => AIOps.releaseGPUMemory());
 ipcMain.handle('ai:tool-confirm-response', (_e, allowed) => { AIOps.resolveToolConfirm(allowed); return { success: true }; });
+ipcMain.handle('ai:ask-user-response', (_e, payload) => { AIOps.resolveUserGuidance(payload || {}); return { success: true }; });
+// ===== MCP（外部工具服务器）=====
+ipcMain.handle('mcp:start', (_e, id) => AIOps._internal.mcpStart(id));
+ipcMain.handle('mcp:stop', (_e, id) => AIOps._internal.mcpStop(id));
+ipcMain.handle('mcp:restart', (_e, id) => AIOps._internal.mcpRestart(id));
+ipcMain.handle('mcp:status', () => AIOps._internal.mcpStatus());
+ipcMain.handle('mcp:set-enabled', (_e, ids) => AIOps._internal.mcpSetEnabled(ids));
+ipcMain.handle('mcp:stop-all', () => AIOps._internal.mcpStopAll());
+ipcMain.handle('mcp:health-check', () => AIOps._internal.mcpHealthCheck());
+
+// ===== 智能商城（本地，无服务器）=====
+ipcMain.handle('marketplace:list', () => MarketplaceManager.list());
+ipcMain.handle('marketplace:install', (_e, id) => MarketplaceManager.install(id));
+ipcMain.handle('marketplace:install-with-env', (_e, id, envValues) => MarketplaceManager.installWithEnv(id, envValues));
+ipcMain.handle('marketplace:uninstall', (_e, id) => MarketplaceManager.uninstall(id));
+ipcMain.handle('marketplace:set-enabled', (_e, id, enabled) => MarketplaceManager.setEnabled(id, !!enabled));
+ipcMain.handle('marketplace:status', () => MarketplaceManager.status());
+ipcMain.handle('marketplace:import-url', (_e, url) => MarketplaceManager.importPackage(String(url)));
+ipcMain.handle('marketplace:import-file', async (_e, filePath) => {
+  if (filePath) return MarketplaceManager.importPackage(String(filePath));
+  // 未传路径 → 弹选择框
+  const { dialog } = require('electron');
+  const r = await dialog.showOpenDialog({
+    title: '导入技能/商城条目',
+    filters: [
+      { name: '技能包 / 商城清单', extensions: ['zip', 'md', 'yaml', 'yml', 'json'] }
+    ],
+    properties: ['openFile']
+  });
+  if (r.canceled || !r.filePaths.length) return { success: false, error: '已取消' };
+  return MarketplaceManager.importPackage(r.filePaths[0]);
+});
 // ===== AI 长期记忆（设置面板「AI 记忆」区块）=====
 ipcMain.handle('memory:list', (_e, opts) => AIOps.memory.list(opts || {}));
-ipcMain.handle('memory:search', (_e, query, limit) => AIOps.memory.search(query, limit));
+ipcMain.handle('memory:search', (_e, query, limit, workdir) => AIOps.memory.search(query, limit, workdir));
 ipcMain.handle('memory:save', (_e, payload) => AIOps.memory.save(payload || {}));
 ipcMain.handle('memory:update', (_e, id, patch) => AIOps.memory.update(id, patch || {}));
 ipcMain.handle('memory:delete', (_e, id) => AIOps.memory.remove(id));
-ipcMain.handle('memory:clear', () => AIOps.memory.clear());
+ipcMain.handle('memory:clear', (_e, workdir) => AIOps.memory.clear(workdir));
 ipcMain.handle('memory:stats', () => AIOps.memory.stats());
+// ===== AI 进化记录（设置 → 功能设置 → 记忆：近期动向 / 习惯画像）=====
+ipcMain.handle('evolution:list', (_e, limit) => EvolutionStore.listRecent(limit || 30));
+ipcMain.handle('evolution:stats', (_e, days) => EvolutionStore.stats(days || 14));
+ipcMain.handle('evolution:profile', () => ({ success: true, content: EvolutionStore.buildProfile(), path: EvolutionStore.profilePath() }));
+ipcMain.handle('evolution:clear', () => ({ success: EvolutionStore.clear() }));
 // ===== 待办事项（按会话隔离；清单本身由 todo_* 工具写，这里供界面读取/清理）=====
 ipcMain.handle('todo:read', (_e, conversationId) => AIOps.todo.read(conversationId));
 ipcMain.handle('todo:write', (_e, conversationId, items, title) => AIOps.todo.write(conversationId, items, title));
@@ -1685,12 +2020,204 @@ ipcMain.handle('todo:update', (_e, conversationId, patch) => AIOps.todo.update(c
 ipcMain.handle('todo:clear', (_e, conversationId) => AIOps.todo.clear(conversationId));
 ipcMain.handle('todo:stats', () => AIOps.todo.stats());
 // ===== UI 自验证（截图存盘 + 布局自检，供「验证界面」按钮/调试用）=====
+// 截屏类操作会先过「管理员授权 + 虚拟桌面环境」闸门，见 ipc/uiVerify.js 的 gateAndRun
 ipcMain.handle('ui:capture', (_e, opts) => (opts && opts.title
   ? UiVerify.captureProgramWindow(opts)
   : UiVerify.captureAppWindow(opts || {})));
-ipcMain.handle('ui:list-windows', () => UiVerify.listAppWindows());
+ipcMain.handle('ui:list-windows', (_e, opts) => {
+  // 默认只列本应用窗口；传 { all: true } 时列系统所有可见窗口
+  // （画中画要挑「AI 正在操作的那个程序」，必须是系统窗口列表）
+  if (opts && opts.all) {
+    try {
+      const cc = require('./computerControl');
+      return cc.listWindows(opts.keyword);
+    } catch (e) {
+      return { success: false, error: e.message, windows: [] };
+    }
+  }
+  return UiVerify.listAppWindows();
+});
 ipcMain.handle('ui:audit', (_e, opts) => UiVerify.runUiAudit(opts || {}));
 ipcMain.handle('ui:shots-dir', () => UiVerify.shotsDir());
+
+// ===== 原生虚拟桌面（Windows Virtual Desktop）=====
+// 能力：列出/新建/切换/删除桌面、查窗口所属桌面、把窗口挪到别的桌面。
+// 用途：让所有截屏都在独立桌面环境里进行，不打扰用户当前桌面。
+ipcMain.handle('vdesktop:status', () => VirtualDesktop.isAvailable());
+ipcMain.handle('vdesktop:list', () => VirtualDesktop.listDesktops());
+ipcMain.handle('vdesktop:current', () => VirtualDesktop.currentDesktop());
+ipcMain.handle('vdesktop:switch', (_e, id) => VirtualDesktop.switchDesktop(String(id || '')));
+ipcMain.handle('vdesktop:create', () => VirtualDesktop.createDesktop());
+ipcMain.handle('vdesktop:remove', (_e, payload) => {
+  const p = payload && typeof payload === 'object' ? payload : { id: payload };
+  return VirtualDesktop.removeDesktop(String(p.id || ''), p.fallbackId ? String(p.fallbackId) : null);
+});
+ipcMain.handle('vdesktop:window-desktop', (_e, hwnd) => VirtualDesktop.desktopOfWindow(hwnd));
+ipcMain.handle('vdesktop:move-window', (_e, payload) => {
+  const p = payload || {};
+  return VirtualDesktop.moveWindowToDesktop(p.hwnd, String(p.id || ''));
+});
+
+// ===== 截屏授权（管理员密码）=====
+// 票据只存内存 + 到期时间，密码由系统凭据框处理，我们的进程拿不到明文。
+ipcMain.handle('screenshot-auth:status', () => ScreenshotAuth.status());
+ipcMain.handle('screenshot-auth:request', async (e, opts) => {
+  // 弹系统凭据框需要父窗口句柄才能正确置顶/模态
+  const parent = BrowserWindow.fromWebContents(e.sender) || mainWindow;
+  return ScreenshotAuth.requestAuthorization({
+    parentWindow: parent,
+    reason: (opts && opts.reason) || undefined
+  });
+});
+ipcMain.handle('screenshot-auth:revoke', () => {
+  ScreenshotAuth.revoke();
+  return { success: true };
+});
+
+// ===== 隔离桌面（桌面分身）=====
+// CreateDesktop 独立桌面：只用于「不需要看界面」的任务（编译、跑脚本、后台程序），
+// 跑完由 AI 用文本汇报结果。
+// ===== 桌面分身（BetterGI 同款 RDP Child Session · 悬浮预览小窗）=====
+// 进程不分离：主进程 spawn 统一启停 RdpHost（--small 悬浮预览小窗），不占任务栏独立程序位，退出不残留。
+// 启动形态 = 无标题栏的预览小窗，右对齐贴在主程序输入栏上方（--anchor 传输入栏屏幕矩形）；
+// 它只是预览（鼠标输入被吞掉，点不到远端画面），右上角自绘 ✕ 关闭，双击剥离成独立大窗；
+// 双击剥离成独立大窗（自绘标题栏：「—」收回小窗 / 「✕」关闭），两种形态共用同一 RDP 连接、连接不断；
+// 小窗/大窗的 ✕ 都关闭整个桌面分身（RdpHost 退出 + 子会话注销）。
+// 渲染端不再有嵌入画面卡片、不再抓帧，只保留轻量状态指示（desktop:state）。
+// 向渲染端广播一次最新 desktop:state（与 desktopSession 注入的 send 同一通道）
+function broadcastDesktopState(error) {
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const s = DesktopSession.status();
+      mainWindow.webContents.send('desktop:state', {
+        state: s.state,
+        hwnd: s.hwnd,
+        error: error != null ? error : null,
+        pos: (s.widget && s.widget.pos) || null
+      });
+    }
+  } catch (e) { /* ignore */ }
+}
+ipcMain.handle('clone:status', () => {
+  const s = DesktopSession.status();
+  try { Object.assign(s, { winBounds: mainWindow && !mainWindow.isDestroyed() ? mainWindow.getBounds() : null }); } catch (e) {}
+  return s;
+});
+// 量出主程序输入栏在屏幕上的矩形（DIP），供桌面分身悬浮预览小窗定位（贴它上方、右对齐）。
+// 悬浮窗是**浮在消息上层的 overlay**（独立 HWND，不参与渲染端布局、不占用区域），
+// 所以这里只取输入栏矩形当锚点 —— 小窗底边贴输入栏顶边，视觉上"挂在输入框上方"，
+// 与 AI 对话页面形成上下关系（用户要的整体感），但不挤压任何布局。
+// 主窗口是 frame:false，渲染端视口原点 == 窗口客户区原点，所以 window.screenX/Y + getBoundingClientRect()
+// 就是屏幕坐标（Electron 的 screenX/Y 同样是 DIP），不需要再补边框偏移。
+// 优先量 .chat-input-area（整个输入栏：上方工具栏 + 输入框），退而求其次量 .chat-input-wrapper
+// （只有输入框那一行）—— 只量输入框的话小窗会盖住工具栏。
+// 拿不到（元素不存在/被隐藏/脚本报错）就返回 null，由 desktopSession 按主窗口 bounds 估算兜底。
+async function measureInputBarRect() {
+  try {
+    const w = mainWindow;
+    if (!w || w.isDestroyed() || !w.webContents) return null;
+    const rect = await w.webContents.executeJavaScript(
+      `(() => {
+         const el = document.querySelector('.chat-input-area')
+                 || document.querySelector('.chat-input-wrapper')
+                 || document.getElementById('chat-input');
+         if (!el) return null;
+         const r = el.getBoundingClientRect();
+         if (!r || r.width <= 0 || r.height <= 0) return null;
+         return { x: Math.round(window.screenX + r.left), y: Math.round(window.screenY + r.top),
+                  width: Math.round(r.width), height: Math.round(r.height) };
+       })()`, true);
+    if (!rect || !(rect.width > 0)) return null;
+    // ⚠️ 必须补 right（主窗口右缘 DIP）—— 桌面分身的水平定位以它为准，不是输入栏右缘。
+    //   漏了它：启动时 --anchorRight 还有值（首锚正确），但**拖动主窗口后的重锚**全发
+    //   right=0 → 宿主退回"贴输入栏右缘"（desktopSession.reanchor 里 right ? … : 0），
+    //   小窗横向每次拖动都往左偏一段，永远对不齐窗口右边框。
+    //   注意 GetCursorPos 之外拿不到窗口外框，用 getBounds 补，和 ipc/aiOps 的 pickMainWindow 同源。
+    try {
+      const wb = w.getBounds();
+      if (wb && Number.isFinite(wb.x) && Number.isFinite(wb.width) && wb.width > 0) {
+        rect.right = Math.round(wb.x + wb.width);
+      }
+    } catch (e) { /* 保持无 right：宿主会退回输入栏右缘，仍可用 */ }
+    return rect;
+  } catch (e) {
+    return null;
+  }
+}
+
+// AI 对话页是否可见（渲染端上报）：预览小窗只在对话页展示。
+// 隐藏不等于销毁 —— 分身继续在后台跑（托盘/面板显示"运行中"），切回对话页自动再显示。
+let clonePageVisible = true;
+ipcMain.on('clone:page-visible', (_e, on) => {
+  clonePageVisible = !!on;
+  try { DesktopSession.setVisible(clonePageVisible); } catch (_) { /* 忽略 */ }
+});
+
+// 取主窗口的原生句柄（十进制字符串），作为桌面分身窗口的 Win32 owner：
+// 设好之后分身恒在主窗口之上，主窗口销毁/最小化时跟着走（用户要求"悬浮窗和主程序绑定"）。
+function mainWindowHwnd() {
+  try {
+    const w = mainWindow;
+    if (!w || w.isDestroyed()) return 0;
+    const buf = w.getNativeWindowHandle();
+    if (!buf || !buf.length) return 0;
+    // x64 返回 8 字节小端；32 位 Electron 是 4 字节。HWND 可能超过 2^31，必须走 BigInt。
+    if (buf.length >= 8) return buf.readBigUInt64LE(0).toString();
+    return String(buf.readUInt32LE(0));
+  } catch (e) {
+    return 0;
+  }
+}
+
+// 启动桌面分身（默认形态：贴输入栏上方的悬浮预览小窗，无标题栏）
+ipcMain.handle('clone:ensure', async (_e, opts) => {
+  let bounds = null;
+  try { if (mainWindow && !mainWindow.isDestroyed()) bounds = mainWindow.getBounds(); } catch (e) {}
+  const anchorRect = await measureInputBarRect();
+  // 先同步"对话页是否可见"：不可见时以隐藏态启动（后台跑着，切回对话页才显示）
+  try { DesktopSession.setVisible(clonePageVisible); } catch (_) {}
+  const r = await DesktopSession.start({
+    ...(opts || {}),
+    winBounds: bounds,
+    anchorRect,
+    ownerHwnd: mainWindowHwnd()
+  });
+  // 调用后同步向渲染端广播一次最终状态
+  broadcastDesktopState(r.success ? null : (r.error || null));
+  return r;
+});
+// 停止并注销子会话
+ipcMain.handle('clone:exit', async () => {
+  const r = await DesktopSession.stop();
+  broadcastDesktopState(null);
+  return r;
+});
+// 查询子会话（WTS）
+ipcMain.handle('clone:child-session', () => DesktopSession.status().childSession);
+
+// ===== 画中画（PiP）：主窗口缩到右下角显示被 AI 操作的程序 =====
+// 用途：AI 操作别的程序时，用户在右下角小窗里看得见，必要时可点一下接管。
+// 状态完全可还原，退出时恢复用户原本的窗口尺寸/最大化/全屏。
+ipcMain.handle('pip:enter', async (_e, opts) => {
+  const r = await PipWindow.enter(opts || {});
+  if (r.success && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('pip:state', PipWindow.status());
+  }
+  return r;
+});
+ipcMain.handle('pip:exit', () => {
+  const r = PipWindow.exit();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('pip:state', PipWindow.status());
+  }
+  return r;
+});
+ipcMain.handle('pip:status', () => PipWindow.status());
+ipcMain.handle('pip:set-target', async (_e, title) => PipWindow.setTarget(title));
+// 用户在画中画画面上点一下 → 换算成真实屏幕坐标点过去
+ipcMain.handle('pip:forward-click', (_e, params) => PipWindow.forwardClick(params || {}));
+// 画中画模式下暂停/恢复定时器（用户去干别的时可以停掉省资源）
+ipcMain.handle('pip:refresh', () => PipWindow.pushFrame().then(() => ({ success: true })));
 // 多角色智能体管理
 ipcMain.handle('agent:roles', () => AIOps.getAgentRoles());
 ipcMain.handle('agent:role-save', (_e, role) => AIOps.saveAgentRole(role));
@@ -1705,12 +2232,48 @@ ipcMain.handle('ai:get-status', () => AIOps.getStatus());
 ipcMain.handle('ai:ollama-list-models', (_e, host) => AIOps.listOllamaModels(host));
 ipcMain.handle('ai:ollama-test', (_e, host) => AIOps.testOllamaConnection(host));
 
+// ===== 多模态模型支持 =====
+// 检测当前 provider/模型是否支持视觉（多模态）
+// 关键词命中直接返回；未命中时向端点发微型图片请求实测（结果缓存 10 分钟）
+ipcMain.handle('ai:vision-detect', async (_e, providerId) => {
+  const provider = AIOps._internal ? AIOps._internal.findProvider(providerId) : null;
+  return MultimodalAgent.resolveVisionCapability(provider);
+});
+// 图片转 base64 data URL（供前端预览或调试）
+ipcMain.handle('ai:image-to-dataurl', (_e, imagePath, maxWidth) => {
+  return MultimodalAgent.imageToDataUrl(imagePath, maxWidth);
+});
+// 多模态对话：支持图片输入的 Agent 对话（带工具调用）
+ipcMain.handle('ai:multimodal-chat', (_e, params) => {
+  return MultimodalAgent.multimodalChat(params, broadcastToWindows);
+});
+
+// ===== 多 Agent 协同工作 =====
+// 获取内置协同预设方案列表
+ipcMain.handle('ai:multi-agent-presets', () => MultimodalAgent.getPresets());
+// 根据预设 ID + provider 构建可执行的编排配置
+ipcMain.handle('ai:multi-agent-build-preset', (_e, presetId, providerId, overrides) => {
+  const provider = AIOps._internal ? AIOps._internal.findProvider(providerId) : null;
+  return MultimodalAgent.buildPresetConfig(presetId, provider, overrides || {});
+});
+// 执行多 Agent 协同编排（sequential / parallel / debate）
+ipcMain.handle('ai:multi-agent-orchestrate', (_e, config) => {
+  return MultimodalAgent.orchestrate({
+    ...config,
+    onEvent: (type, data) => {
+      BrowserWindow.getAllWindows().forEach(w => {
+        try { w.webContents.send('ai:multi-agent-event', { type, ...data }); } catch (e) {}
+      });
+    }
+  });
+});
+
 // 桌宠专用对话（不广播到主窗口，避免重复处理）
 ipcMain.handle('pet:chat', (_e, params) => AIOps.chat(params, null));
 // 桌宠专用 Agent 对话（支持工具调用，结果通过回调返回给宠物窗口）
 ipcMain.handle('pet:agent-chat', async (e, params) => {
   const win = BrowserWindow.fromWebContents(e.sender);
-  return await AIOps.agentChat(params, (channel, data) => {
+  return await AIOps.agentChat({ ...params, source: params?.source || 'pet' }, (channel, data) => {
     if (win && !win.isDestroyed()) win.webContents.send('pet:agent-event', data);
   });
 });
@@ -1728,6 +2291,47 @@ ipcMain.handle('sys:get-info', () => ({
 }));
 
 ipcMain.handle('sys:browse-url', (e, url) => shell.openExternal(url));
+
+ipcMain.handle('shell:open-html', async (e, htmlContent) => {
+  const fs = require('fs');
+  const path = require('path');
+  const os = require('os');
+  const tmpDir = os.tmpdir();
+  const tmpFile = path.join(tmpDir, 'fuling-preview-' + Date.now() + '.html');
+  fs.writeFileSync(tmpFile, htmlContent, 'utf8');
+  shell.openExternal('file:///' + tmpFile.replace(/\\/g, '/'));
+  return { success: true, path: tmpFile };
+});
+
+// 保存代码文件
+ipcMain.handle('code:save-file', async (e, code, lang) => {
+  const fs = require('fs');
+  const path = require('path');
+  const { dialog } = require('electron');
+  try {
+    const extMap = {
+      javascript: 'js', js: 'js', html: 'html', css: 'css', python: 'py',
+      bash: 'sh', shell: 'sh', json: 'json', xml: 'xml', sql: 'sql',
+      typescript: 'ts', ts: 'ts', java: 'java', c: 'c', cpp: 'cpp',
+      go: 'go', rust: 'rs', php: 'php', ruby: 'rb', swift: 'swift',
+      kotlin: 'kt', dart: 'dart', yaml: 'yaml', yml: 'yml', md: 'md'
+    };
+    const ext = extMap[lang] || 'txt';
+    const defaultName = 'code-' + Date.now() + '.' + ext;
+    const result = await dialog.showSaveDialog({
+      title: '保存代码文件',
+      defaultPath: path.join(require('os').homedir(), 'Desktop', defaultName),
+      filters: [{ name: ext.toUpperCase() + ' 文件', extensions: [ext] }, { name: '所有文件', extensions: ['*'] }]
+    });
+    if (result.canceled || !result.filePath) {
+      return { success: false, error: '用户取消' };
+    }
+    fs.writeFileSync(result.filePath, code, 'utf8');
+    return { success: true, path: result.filePath };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
 
 ipcMain.handle('app:version', () => {
   try { const v = UpdateOps.getCurrentVersion(); if (v) return v; } catch(e) {}
@@ -1887,12 +2491,9 @@ ipcMain.handle('pet:apply-settings', (_e, settings) => {
 
     // 仅在点击穿透实际变化时应用
     if (typeof settings.clickThrough === 'boolean' && settings.clickThrough !== lastPetSettings.clickThrough) {
-      withPositionPreserved(() => {
-        // 无论开启还是关闭穿透，都先设为前向穿透模式
-        // 开启时：完全穿透（渲染进程设 pointerEvents=none 不再切换）
-        // 关闭时：动态穿透（渲染进程根据像素透明度动态切换）
-        petWindow.setIgnoreMouseEvents(true, { forward: true });
-      });
+      // 开启完全穿透：不转发鼠标事件（forward:false），性能更好
+      // 关闭穿透（动态穿透）：转发 mousemove 用于像素检测（forward:true）
+      petWindow.setIgnoreMouseEvents(true, { forward: !settings.clickThrough });
       petWindow.webContents.send('pet:clickthrough', settings.clickThrough);
       lastPetSettings.clickThrough = settings.clickThrough;
     }
@@ -1958,12 +2559,72 @@ ipcMain.handle('pet:set-window-bounds', (_e, { width, height, centerX, centerY }
   }
 });
 
-// --- Chat History ---
-const chatHistoryPath = path.join(userDataPath, 'chat_history.json');
+// --- Chat History（目录化存储）---
+// 聊天记录按项目单独存放于应用数据目录 <userData>/conversations/<项目目录名>/<会话id>.json，
+// 不写入项目工作目录（避免用户删除项目目录导致聊天记录丢失）；
+// 只有当应用内删除对话/项目（会话从列表中移除）时才物理移除对应文件。
+const chatHistoryPath = path.join(userDataPath, 'chat_history.json'); // 仅用于旧版数据迁移
+const conversationsDir = path.join(userDataPath, 'conversations');
+
+// 项目名 → 安全目录名（未绑定项目归入 _general）
+function sanitizeDirName(name) {
+  if (!name) return '_general';
+  return String(name).replace(/[\\/:*?"<>|\s]+/g, '_').trim() || '_general';
+}
+// 会话 → 所属项目目录 key（取工作目录的末级目录名）
+function projectKeyOf(conv) {
+  const wd = (conv && conv.workdir) || '';
+  if (!wd) return '_general';
+  const base = wd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || '';
+  return sanitizeDirName(base);
+}
+function ensureConversationsDir() {
+  if (!fs.existsSync(conversationsDir)) fs.mkdirSync(conversationsDir, { recursive: true });
+}
+// 递归收集 conversationsDir 下所有 .json 完整路径
+function scanConversationFiles() {
+  const files = [];
+  if (!fs.existsSync(conversationsDir)) return files;
+  const stack = [conversationsDir];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { continue; }
+    for (const ent of entries) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) stack.push(full);
+      else if (ent.isFile() && ent.name.endsWith('.json')) files.push(full);
+    }
+  }
+  return files;
+}
 
 ipcMain.handle('chat:save', (_e, history) => {
   try {
-    fs.writeFileSync(chatHistoryPath, JSON.stringify(history, null, 2), 'utf-8');
+    ensureConversationsDir();
+    const list = Array.isArray(history) ? history : [];
+    const ids = new Set();
+    for (const conv of list) {
+      if (!conv || !conv.id) continue;
+      ids.add(conv.id);
+      const sub = path.join(conversationsDir, projectKeyOf(conv));
+      fs.mkdirSync(sub, { recursive: true });
+      fs.writeFileSync(path.join(sub, conv.id + '.json'), JSON.stringify(conv, null, 2), 'utf-8');
+    }
+    // 删除已被移除（删除对话/项目）的会话文件
+    for (const file of scanConversationFiles()) {
+      const convId = path.basename(file, '.json');
+      if (!ids.has(convId)) {
+        try { fs.unlinkSync(file); } catch (e) {}
+      }
+    }
+    // 清理空子目录（某项目已无会话）
+    for (const sub of fs.readdirSync(conversationsDir)) {
+      const full = path.join(conversationsDir, sub);
+      try {
+        if (fs.statSync(full).isDirectory() && fs.readdirSync(full).length === 0) fs.rmdirSync(full);
+      } catch (e) {}
+    }
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
@@ -1972,9 +2633,29 @@ ipcMain.handle('chat:save', (_e, history) => {
 
 ipcMain.handle('chat:load', () => {
   try {
+    const files = scanConversationFiles();
+    if (files.length > 0) {
+      const data = files.map(f => {
+        try { return JSON.parse(fs.readFileSync(f, 'utf-8')); } catch (e) { return null; }
+      }).filter(Boolean);
+      data.sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+      return { success: true, data };
+    }
+    // 旧版单一 chat_history.json → 迁移到目录化存储
     if (fs.existsSync(chatHistoryPath)) {
-      const data = fs.readFileSync(chatHistoryPath, 'utf-8');
-      return { success: true, data: JSON.parse(data) };
+      const old = JSON.parse(fs.readFileSync(chatHistoryPath, 'utf-8'));
+      if (Array.isArray(old) && old.length) {
+        ensureConversationsDir();
+        for (const conv of old) {
+          if (!conv || !conv.id) continue;
+          const sub = path.join(conversationsDir, projectKeyOf(conv));
+          fs.mkdirSync(sub, { recursive: true });
+          fs.writeFileSync(path.join(sub, conv.id + '.json'), JSON.stringify(conv, null, 2), 'utf-8');
+        }
+        try { fs.unlinkSync(chatHistoryPath); } catch (e) {}
+        const data = old.slice().sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+        return { success: true, data };
+      }
     }
     return { success: true, data: [] };
   } catch (error) {
@@ -1984,10 +2665,22 @@ ipcMain.handle('chat:load', () => {
 
 ipcMain.handle('chat:clear', () => {
   try {
+    if (fs.existsSync(conversationsDir)) {
+      fs.rmSync(conversationsDir, { recursive: true, force: true });
+    }
     fs.writeFileSync(chatHistoryPath, '[]', 'utf-8');
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
+  }
+});
+
+// 检查项目工作目录是否仍存在于本地（用于提示「项目已删除，是否移除该项目」）
+ipcMain.handle('project:exists', (_e, p) => {
+  try {
+    return { success: true, exists: !!p && fs.existsSync(p) };
+  } catch (error) {
+    return { success: false, exists: false, error: error.message };
   }
 });
 
@@ -2201,197 +2894,89 @@ ipcMain.handle('speech:stop', () => {
   return { success: true };
 });
 
-// --- WaveIn 音频录制（主进程采集，避免渲染进程崩溃）---
-// 使用 Windows WaveIn API 在主进程中采集麦克风音频，输出 WAV 格式数据
-// 渲染进程只负责触发和显示结果，完全不接触音频流，不会导致渲染进程崩溃
-ipcMain.handle('speech:record-start', () => {
-  return new Promise((resolve) => {
-    if (process.platform !== 'win32') {
-      resolve({ success: false, error: '当前系统不支持此语音识别方式' });
-      return;
-    }
-    
-    if (!WaveInRecorder) {
-      resolve({ success: false, error: '音频采集模块未加载' });
-      return;
-    }
-    
-    // 检查是否有音频输入设备
-    if (!WaveInRecorder.isAvailable()) {
-      resolve({ success: false, error: '未检测到麦克风设备，请确保麦克风已正确连接并启用' });
-      return;
-    }
-    
-    // 如果已有活跃的录制器，先停止
-    if (activeRecorder) {
-      try { activeRecorder.stop(); } catch (e) {}
-      activeRecorder = null;
-    }
-    
-    try {
-      console.log('[Speech] 开始 WaveIn 录制...');
-      const recorder = new WaveInRecorder({
-        sampleRate: 16000,
-        channels: 1,
-        bitsPerSample: 16,
-        bufferSize: 4096,
-        numBuffers: 4
-      });
-      
-      recorder.start();
-      activeRecorder = recorder;
-      console.log('[Speech] WaveIn 录制已开始');
-      resolve({ success: true });
-    } catch (e) {
-      console.error('[Speech] WaveIn 录制启动失败:', e.message);
-      resolve({ success: false, error: '录音启动失败：' + e.message });
-    }
-  });
-});
-
-ipcMain.handle('speech:record-stop', () => {
-  return new Promise((resolve) => {
-    if (!activeRecorder) {
-      resolve({ success: false, error: '未在录制中' });
-      return;
-    }
-    
-    try {
-      console.log('[Speech] 停止录制...');
-      const recorder = activeRecorder;
-      activeRecorder = null;
-      
-      // 停止录制并获取 WAV 数据（MCIRecorder.stop() 返回 ArrayBuffer）
-      const wavArrayBuffer = recorder.stop();
-      
-      if (!wavArrayBuffer || wavArrayBuffer.byteLength === 0) {
-        console.log('[Speech] 未录制到音频数据');
-        resolve({ success: false, error: '未采集到音频数据' });
-        return;
-      }
-      
-      console.log('[Speech] 录制完成，WAV 大小:', wavArrayBuffer.byteLength, 'bytes');
-      
-      // 直接返回 ArrayBuffer（MCIRecorder.stop() 已经返回 ArrayBuffer）
-      resolve({ success: true, wavBuffer: wavArrayBuffer });
-    } catch (e) {
-      console.error('[Speech] 录制停止失败:', e.message);
-      resolve({ success: false, error: '录音停止失败：' + e.message });
-    }
-  });
-});
-
-// --- Windows SAPI 语音识别（从 WAV 数据识别）---
-// 渲染进程负责采集麦克风 PCM 并封装成 WAV 传过来，主进程用 SetInputToWaveFile 喂给
-// SAPI。这样彻底绕开 SpeechRecognitionEngine.SetInputToDefaultAudioDevice 在部分机器上
-// 报"找不到请求的数据项目"的设备绑定问题（WAV 文件输入不依赖默认音频设备）。
-ipcMain.handle('speech:recognize-wav', (event, wavBuffer) => {
-  return new Promise((resolve) => {
-    if (process.platform !== 'win32') {
-      resolve({ success: false, error: '当前系统不支持此语音识别方式' });
-      return;
-    }
-    if (!wavBuffer || (wavBuffer.byteLength !== undefined && wavBuffer.byteLength === 0) ||
-        (wavBuffer.length !== undefined && wavBuffer.length === 0)) {
-      resolve({ success: false, error: '未收到音频数据' });
-      return;
-    }
-
-    let buf;
-    try {
-      buf = Buffer.isBuffer(wavBuffer) ? wavBuffer : Buffer.from(wavBuffer);
-    } catch (e) {
-      resolve({ success: false, error: '音频数据格式错误' });
-      return;
-    }
-
-    const wavPath = path.join(os.tmpdir(), `speech_in_${Date.now()}.wav`);
-    try { fs.writeFileSync(wavPath, buf); } catch (e) {
-      resolve({ success: false, error: '无法写入临时音频: ' + e.message });
-      return;
-    }
-
-    const safeWav = wavPath.replace(/'/g, "''");
-    const script = `$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding
-Add-Type -AssemblyName System.Speech
-
-try {
-  $culture = New-Object System.Globalization.CultureInfo 'zh-CN'
-  $engine = New-Object System.Speech.Recognition.SpeechRecognitionEngine $culture
-} catch {
-  $engine = New-Object System.Speech.Recognition.SpeechRecognitionEngine
-}
-
-$loaded = $false
-$errs = @()
-if (-not $loaded) {
-  try {
-    $b = New-Object System.Speech.Recognition.GrammarBuilder
-    if ($culture) { $b.Culture = $culture }
-    $b.AppendDictation()
-    $g = New-Object System.Speech.Recognition.Grammar $b
-    $g.Enabled = $true
-    $engine.LoadGrammar($g)
-    $loaded = $true
-  } catch { $errs += ('A:' + $_.Exception.Message) }
-}
-if (-not $loaded) {
-  try {
-    $g = New-Object System.Speech.Recognition.DictationGrammar
-    $g.Enabled = $true
-    $engine.LoadGrammar($g)
-    $loaded = $true
-  } catch { $errs += ('B:' + $_.Exception.Message) }
-}
-if (-not $loaded) {
-  foreach ($fmt in @('grammar:dictation', 'grammar:dictation#spelling')) {
-    try {
-      $g = New-Object System.Speech.Recognition.DictationGrammar $fmt
-      $g.Enabled = $true
-      $engine.LoadGrammar($g)
-      $loaded = $true
-      break
-    } catch { $errs += ('C:' + $fmt + ':' + $_.Exception.Message) }
+// --- WaveIn 音频录制（worker 线程采集，主线程零阻塞）---
+// MCI 设备操作（open/set/close/record/save）与 WAV 16k 重采样原先同步跑在
+// 主线程，点一次语音按钮整个应用冻结——现已整体移入 voiceRecorderWorker。
+ipcMain.handle('speech:record-start', async () => {
+  if (process.platform !== 'win32') {
+    return { success: false, error: '当前系统不支持此语音识别方式' };
   }
-}
-if (-not $loaded) {
-  [Console]::Error.WriteLine('无法创建听写语法: ' + ($errs -join ' | '))
-  exit 2
-}
+  try {
+    const available = await voiceRecorderHost.isAvailable();
+    if (!available) {
+      return { success: false, error: '未检测到麦克风设备，请确保麦克风已正确连接并启用' };
+    }
+    console.log('[Speech] 开始语音录制（worker 线程）...');
+    const result = await voiceRecorderHost.start({
+      sampleRate: 16000,
+      channels: 1,
+      bitsPerSample: 16
+    });
+    console.log('[Speech] 录制启动结果:', result.success ? '成功' : result.error);
+    return result;
+  } catch (e) {
+    console.error('[Speech] 录制启动失败:', e.message);
+    return { success: false, error: '录音启动失败：' + e.message };
+  }
+});
 
-try {
-  $engine.SetInputToWaveFile('${safeWav}')
-  $timeout = [TimeSpan]::FromSeconds(30)
-  $result = $engine.Recognize($timeout)
-  if ($result) { Write-Output $result.Text }
-  $engine.Dispose()
-} catch {
-  [Console]::Error.WriteLine($_.Exception.Message)
-  exit 1
-}`;
+ipcMain.handle('speech:record-stop', async () => {
+  try {
+    console.log('[Speech] 停止录制（worker 线程）...');
+    const result = await voiceRecorderHost.stop();
+    if (result.success && result.wav) {
+      console.log('[Speech] 录制完成，WAV 大小:', result.wav.byteLength, 'bytes');
+      return { success: true, wavBuffer: result.wav };
+    }
+    return result;
+  } catch (e) {
+    console.error('[Speech] 录制停止失败:', e.message);
+    return { success: false, error: '录音停止失败：' + e.message };
+  }
+});
 
-    const scriptPath = path.join(os.tmpdir(), `speech_wav_${Date.now()}.ps1`);
-    fs.writeFileSync(scriptPath, '﻿' + script, 'utf-8');
+// --- Sherpa-ONNX 语音识别（SenseVoice int8，模块式下载）---
+// 识别在 voiceRecorderWorker 线程内进行（模型加载+解码是秒级 CPU 密集操作，
+// 不能进主线程）。模块未下载时返回 code='ASR_NOT_INSTALLED'，渲染端据此
+// 弹出下载提示。
+ipcMain.handle('voice:asr-status', () => {
+  return asrModule.getStatus();
+});
 
-    const psExe = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    exec(
-      `"${psExe}" -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`,
-      { timeout: 40000, maxBuffer: 1024 * 1024 },
-      (err, stdout, stderr) => {
-        try { fs.unlinkSync(scriptPath); } catch (_) {}
-        try { fs.unlinkSync(wavPath); } catch (_) {}
-        if (err) {
-          const errMsg = (stderr || '').trim() || err.message || '未知错误';
-          resolve({ success: false, error: errMsg.slice(0, 200) });
-          return;
-        }
-        const text = (stdout || '').trim();
-        if (text) resolve({ success: true, text });
-        else resolve({ success: false, error: null });
-      }
-    );
-  });
+ipcMain.handle('voice:asr-download', async () => {
+  console.log('[Speech] ASR 模块下载请求');
+  return await asrModule.download();
+});
+
+ipcMain.handle('voice:asr-download-cancel', () => {
+  return asrModule.cancelDownload();
+});
+
+ipcMain.handle('speech:recognize-wav', async (event, wavBuffer) => {
+  const empty = !wavBuffer ||
+    (wavBuffer.byteLength !== undefined && wavBuffer.byteLength === 0) ||
+    (wavBuffer.length !== undefined && wavBuffer.length === 0);
+  if (empty) {
+    return { success: false, error: '未收到音频数据' };
+  }
+
+  const status = asrModule.getStatus();
+  if (!status.installed) {
+    return { success: false, code: 'ASR_NOT_INSTALLED', error: '语音识别模块未下载' };
+  }
+
+  try {
+    await voiceRecorderHost.initAsr(status.modelDir);
+    const r = await voiceRecorderHost.recognize(wavBuffer);
+    if (r && r.success) {
+      if (r.text) return { success: true, text: r.text };
+      return { success: false, error: null }; // 与旧契约一致：识别为空时 error=null
+    }
+    return r || { success: false, error: '识别失败' };
+  } catch (e) {
+    console.error('[Speech] ASR 识别失败:', e.message);
+    return { success: false, error: '识别失败：' + e.message };
+  }
 });
 
 // --- Changelog ---
@@ -2452,7 +3037,12 @@ ipcMain.handle('changelog:check-update', () => {
 
 // ========== 应用更新 IPC ==========
 ipcMain.handle('update:check', async () => {
-  try { return await ElectronUpdater.checkForUpdate(); }
+  // ★ 渲染层（showUpdateModal / doUpdate）按 UpdateOps.checkForUpdate 的数据模型编写，
+  //   依赖返回的 patches[]（补丁/完整安装包列表）与 fullInstall 字段。
+  //   之前误接到 ElectronUpdater.checkForUpdate（返回 type:'full'|'patch'，无 patches），
+  //   导致点击「立即更新」时 doUpdate 访问 currentUpdateInfo.patches.length 直接抛错、无法下载。
+  //   这里统一改走 UpdateOps，保证检测（含 full-install.json 的完整安装包）与下载/应用闭环一致。
+  try { return await UpdateOps.checkForUpdate(); }
   catch (e) { return { hasUpdate: false, error: e.message, currentVersion: app.getVersion() }; }
 });
 
@@ -2473,21 +3063,34 @@ ipcMain.handle('update:mirror-switch', () => ElectronUpdater.switchToNextMirror(
 
 ipcMain.handle('update:download', async (event, updateInfo) => {
   try {
-    if (updateInfo && updateInfo.type === 'patch') {
-      const patchInfo = { url: updateInfo.patchUrl, version: updateInfo.version, to: updateInfo.to, from: updateInfo.from, sha256: updateInfo.patchSha256, checksum: updateInfo.patchSha256, requiresRestart: updateInfo.requiresRestart, changes: updateInfo.changes };
-      const result = await UpdateOps.downloadPatch(patchInfo, (percent) => { event.sender.send('update:download-progress', { percent, patch: updateInfo }); });
+    // ★ 以「是否携带 url」区分 UpdateOps 条目（补丁 / 完整安装包）与 ElectronUpdater 条目：
+    //   UpdateOps.checkForUpdate 返回的每个 patch / fullInstall 都带 url（安装包直链），
+    //   由 UpdateOps.downloadPatch 负责多源回退下载；ElectronUpdater 条目无 url，走其自带下载。
+    //   这里只负责下载，不再在 handler 里自动应用补丁（应用由渲染层 updateApply 统一完成，
+    //   避免补丁被应用两次、以及下载后 apply 阶段误判「未下载完成」）。
+    if (updateInfo && updateInfo.url) {
+      const result = await UpdateOps.downloadPatch(updateInfo, (percent) => { event.sender.send('update:download-progress', { percent, patch: updateInfo }); });
       if (result.success && result.zipPath) {
-        const applyResult = UpdateOps.applyPatch(result.zipPath, patchInfo);
-        return { success: true, type: 'patch', zipPath: result.zipPath, requiresRestart: updateInfo.requiresRestart };
+        return { success: true, type: updateInfo.isFullPackage ? 'full' : 'patch', zipPath: result.zipPath, requiresRestart: !!updateInfo.requiresRestart };
       }
-      return { success: false, error: result.error || '补丁下载失败' };
+      return { success: false, error: result.error || '下载失败' };
     }
     const result = await ElectronUpdater.downloadUpdate(updateInfo, (percent) => { event.sender.send('update:download-progress', { percent, patch: updateInfo }); });
     return result;
   } catch (e) { return { success: false, error: e.message }; }
 });
 
-ipcMain.handle('update:apply', async () => ElectronUpdater.applyUpdate());
+ipcMain.handle('update:apply', async (_e, data) => {
+  try {
+    // ★ 渲染层 doUpdate / doFullPackageUpdate 始终带 zipPath + patchInfo 调用，
+    //   走 UpdateOps.applyPatch（补丁解压应用 / 完整安装包落地为 installer 并返回 installerPath）。
+    //   无参数时回退到 ElectronUpdater.applyUpdate（完整包安装 / quitAndInstall）。
+    if (data && data.zipPath) {
+      return UpdateOps.applyPatch(data.zipPath, data.patchInfo || {});
+    }
+    return ElectronUpdater.applyUpdate();
+  } catch (e) { return { success: false, error: e.message }; }
+});
 ipcMain.handle('update:verify', (_e, { zipPath, checksum }) => {
   const ok = UpdateOps.verifyChecksum(zipPath, checksum);
   return { success: ok, error: ok ? null : '校验失败' };
@@ -3098,6 +3701,19 @@ ipcMain.handle('bongocat:set-model', (_e, modelPath) => {
   }
 });
 
+// ★ BongoCat 输入防卡键：宠物窗口最小化/隐藏时，清空全局键盘按住状态并通知渲染端复位。
+// 由 petWindow 的 minimize/hide 事件触发；clearAllKeys 幂等（无按住则不发送）。
+function notifyBongoInputCleared() {
+  try {
+    const released = GlobalKeyboard.clearAllKeys();
+    if (released && released.length && petWindow && !petWindow.isDestroyed()) {
+      petWindow.webContents.send('bongocat:global-keydown', { clear: true, events: released });
+    }
+  } catch (e) {
+    console.warn('[BongoCat] 清空按住状态失败(忽略):', e.message);
+  }
+}
+
 // 启动BongoCat：在宠物窗口中加载模型 + 启动全局键盘钩子
 ipcMain.handle('bongocat:launch', (_e, modelPath) => {
   try {
@@ -3380,6 +3996,41 @@ ipcMain.handle('debug-log:request', () => {
 // ==================== App Lifecycle ====================
 
 app.whenReady().then(() => {
+  // ★ 画中画：注入主窗口获取方式与画面推送通道
+  try {
+    PipWindow.configure({
+      getWindow: () => mainWindow,
+      send: (channel, payload) => {
+        const w = mainWindow;
+        if (w && !w.isDestroyed()) w.webContents.send(channel, payload);
+      }
+    });
+  } catch (e) {
+    console.warn('[PiP] 初始化失败:', e.message);
+  }
+
+  // ★ 桌面分身：注入渲染端发送通道（desktop:state 广播到主窗口；悬浮窗方案已不再推帧）
+  try {
+    DesktopSession.configure({
+      send: (channel, payload) => {
+        const w = mainWindow;
+        if (w && !w.isDestroyed()) w.webContents.send(channel, payload);
+      }
+    });
+  } catch (e) {
+    console.warn('[DesktopSession] 初始化失败:', e.message);
+  }
+
+  // ★ 初始化原生虚拟桌面接口（截屏隔离要用）。
+  //   COM 必须等 app ready、且在主线程初始化；拿不到也不影响启动，
+  //   只是截屏会退回当前桌面执行（见 virtualDesktop.js 的双通道设计）。
+  try {
+    const vd = VirtualDesktop.init();
+    console.log('[VirtualDesktop] 初始化:', JSON.stringify(VirtualDesktop.isAvailable()));
+  } catch (e) {
+    console.warn('[VirtualDesktop] 初始化异常（截屏将退回当前桌面）:', e.message);
+  }
+
   // ★ 启动内存与进程优化监控
   try {
     MemoryOptimizer.startMonitoring();
@@ -3577,6 +4228,11 @@ app.whenReady().then(() => {
     createMainWindow();
   }
 
+  // ★ 桌面分身（输入栏上方悬浮预览小窗方案）：**刻意不随程序启动**。
+  //   分身会占一个 RDP 子会话 + 常驻 RdpHost 进程，用户只想用主程序时不该被连带拉起。
+  //   需要时从悬浮面板点「启动并连接」（clone:ensure）手动拉起。
+  //   若要恢复自动拉起，在下面加回 DesktopSession.start({ winBounds, anchorRect }) 即可（bounds 可能为 null）。
+
   app.on('activate', () => {
     // macOS: 点击 Dock 图标时创建主窗口
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -3592,55 +4248,81 @@ app.on('window-all-closed', (e) => {
   }
 });
 
-app.on('before-quit', () => {
-  isQuitting = true;
-  // 退出前立即保存宠物窗口位置和大小，下次启动时恢复
-  savePetBoundsImmediate();
-  // 收掉由我们启动的本地推理服务，否则 llama-server 会留着占显存
-  try { AIOps.stopLocalModel(); } catch (e) { /* 忽略 */ }
-});
-
-// 退出前把任务栏探针卸掉（若还在驻留），并还原 TAP 外观。
-// 自检流程本身是"用完即卸"，这里只是兜底。用 before-quit + 有界等待，避免拖住退出。
-let taskbarUnloadDone = false;
+// 退出收尾（合并原两个 before-quit：避免 stopLocalModel()/dispose() 被重触发执行两次，
+// 并用更短的有界等待收敛退出延迟，消除"右键/托盘退出卡顿"）。
+// ⚠️ TAP 附着是每个 explorer 生命周期只能一次的不可逆资源
+// （拆除后 InitializeXamlDiagnosticsEx 永久返回 0x80070490，只能重启 explorer 恢复），
+// 所以退出时【绝不卸载】aiLobsterTap.dll，只把效果还原为 normal（Opacity=1），
+// DLL 常驻 explorer 供下次启动复用。重启 explorer 进程才会让 DLL 随宿主消失。
+let quitCleanupDone = false;
 app.on('before-quit', (e) => {
-  if (taskbarUnloadDone) return;
-  taskbarUnloadDone = true;
-  e.preventDefault();
+  // 已被本处理器接管并重触发过 app.quit()：这次放行，进入 will-quit 真正退出
+  if (quitCleanupDone) return;
+  quitCleanupDone = true;
+  isQuitting = true;
 
+  // 退出前立即保存宠物窗口位置和大小，下次启动时恢复
+  try { savePetBoundsImmediate(); } catch (_) { /* 忽略 */ }
+
+  // 收掉由我们启动的本地推理服务（非阻塞：taskkill），否则 llama-server 会留着占显存
+  try { AIOps.stopLocalModel(); } catch (_) { /* 忽略 */ }
+
+  // 收掉桌面分身：先写停止指令，再给它一个很短的窗口自行退出（自行退出会走 OnFormClosed
+  // 注销 RDP 子会话）；超时就强杀并兜底注销子会话（见 DesktopSession.stop）。
+  // ⚠️ 必须纳入下面的 Promise.race 等待 —— 之前这里是 fire-and-forget，主程序几百毫秒后就退了，
+  //    分身进程和 RDP 子会话都留在系统里（用户报的"项目都关了它还没关"就是这个）。
+  const cloneStop = (async () => {
+    try { await DesktopSession.stop({ graceMs: 700 }); } catch (_) { /* 忽略 */ }
+  })();
+
+  // 收掉语音录制 worker 线程（非阻塞：worker.terminate）
+  try { voiceRecorderHost.dispose(); } catch (_) { /* 忽略 */ }
+
+  // 还原任务栏 / 开始菜单外观（若已注入）。这两个调用走命名管道异步通信，
+  // 正常系统几百毫秒内完成；explorer 无响应时最多等 500ms 即放行，绝不再卡 2 秒。
   const tasks = [];
-
-  // 还原 TAP 任务栏外观（如果已注入）
   if (TapClient && TapClient.isInjected) {
     tasks.push(TapClient.applyEffect('normal').catch(() => false));
   }
-
-  // 还原开始菜单外观（如果已注入）
   if (StartMenuClient && StartMenuClient.isInjected) {
     tasks.push(StartMenuClient.applyEffect('normal').catch(() => false));
   }
 
-  // 注意：TAP 附着是每个 explorer 生命周期只能一次的不可逆资源
-  // （拆除后 InitializeXamlDiagnosticsEx 永久返回 0x80070490，只能重启 explorer 恢复），
-  // 所以退出时【绝不卸载】aiLobsterTap.dll，只把效果还原为 normal（Opacity=1），
-  // DLL 常驻 explorer 供下次启动复用。重启 explorer 进程才会让 DLL 随宿主消失。
-
-  const bounded = Promise.race([
-    Promise.all(tasks),
-    new Promise((r) => setTimeout(() => r('timeout'), 2000)),
-  ]);
-  bounded.then((r) => {
-    console.log('[Main] 退出前任务栏清理完成:', r);
+  // 先拦截退出，等还原（有界）完成后再重触发 app.quit() 真正退出
+  e.preventDefault();
+  Promise.race([
+    Promise.all([...tasks, cloneStop]).catch(() => false),
+    new Promise((r) => setTimeout(() => r('timeout'), 1400)),
+  ]).then(() => {
+    console.log('[Main] 退出前外观清理完成');
     app.quit();
   });
 });
 
 app.on('will-quit', () => {
+  // 停止所有 MCP 子进程（外部进程）。
+  // will-quit 是同步钩子，不能 await —— 只能 kill 掉进程句柄，让 MCP server 随主程序一起消失。
+  // 不做的话，npx 拉起的 server 会变孤儿进程一直挂着。
+  try {
+    require('./mcp/mcpManager').stopAllSync();
+  } catch (_) { /* 模块没加载成功就算了 */ }
+
+  // 最后一道保险：桌面分身进程必须随主程序消失。
+  // 正常情况下 before-quit 里已经 await 过 DesktopSession.stop()（优雅退出 + 注销子会话）；
+  // 这里只是防止那条链路因为异常没跑到 —— 进程留在系统里对用户来说就是"程序关了它还在"。
+  try {
+    const { execFileSync } = require('child_process');
+    execFileSync('taskkill', ['/IM', DesktopSession.HOST_EXE_NAME, '/F', '/T'], { stdio: 'ignore' });
+  } catch (_) { /* 本来就没在跑，正常 */ }
+
   // 停止全局键盘钩子
   if (globalKeyboardRunning) {
     GlobalKeyboard.stopGlobalKeyboardHook();
     globalKeyboardRunning = false;
   }
+  // 停掉画中画的画面推送定时器，别留孤儿任务
+  try { PipWindow.dispose(); } catch (e) { /* ignore */ }
+  if (projectMenuWindow && !projectMenuWindow.isDestroyed()) projectMenuWindow.close();
   if (petWindow && !petWindow.isDestroyed()) petWindow.close();
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close();
 

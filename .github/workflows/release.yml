@@ -1,0 +1,80 @@
+name: 跨平台发布
+
+# 打 tag 触发：git tag v1.0.9 && git push origin v1.0.9
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '版本号（如 1.0.9），留空则只打包不发布'
+        required: false
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: 安装依赖
+        run: npm ci
+      - name: 打包 Windows
+        run: npm run build:win-dir
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: win-x64
+          path: |
+            dist/win-unpacked/
+            dist/*.exe
+          if-no-files-found: warn
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: 安装系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libarchive-tools libfuse2
+      - name: 安装依赖
+        run: npm ci
+      - name: 打包 Linux
+        run: npm run build:linux
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+          if-no-files-found: warn
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: 安装依赖
+        run: npm ci
+      - name: 打包 macOS
+        run: npm run build:mac
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-universal
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          if-no-files-found: warn

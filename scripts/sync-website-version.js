@@ -39,5 +39,12 @@ html = html.replace(
   `${version} · 约 120MB`
 );
 
+// 图片加缓存戳：GitHub Pages 的 CDN/浏览器缓存最长约 10 分钟，
+// 不带 ?v= 时用户刷新也会看到旧截图（"图片怎么还是之前的"根因之一）。
+const stamp = version.replace(/^v/, '') + '.' + new Date().toISOString().slice(0, 10).replace(/-/g, '') +
+  new Date().getHours() + String(new Date().getMinutes()).padStart(2, '0');
+html = html.replace(/(images\/[A-Za-z0-9_\-.]+\.png)(\?v=[A-Za-z0-9._-]+)?/g, `$1?v=${stamp}`);
+console.log('图片缓存戳:', stamp);
+
 fs.writeFileSync(websitePath, html, 'utf8');
 console.log(`官网版本号已同步为: ${version}`);

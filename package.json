@@ -1,14 +1,26 @@
 {
   "name": "fuling-shijie",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "浮灵饰界 - 智能桌面宠物助手，支持Live2D模型、本地/云端AI模型、系统操作",
   "main": "src/main/main.js",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron . --dev",
-    "prebuild": "node scripts/copy-build-resources.js",
+    "start": "node scripts/syntax-check.js && electron .",
+    "dev": "node scripts/syntax-check.js && electron . --dev",
+    "check": "node scripts/syntax-check.js && node scripts/test-pick-main-window.js && node scripts/test-clone-follow.js",
+    "check:agent-config": "node scripts/check-agent-config.js && node scripts/verify-agent-config-consumption.js",
+    "check:mcp": "node scripts/test-mcp.js && node scripts/test-mcp-integration.js",
+    "check:connectors": "node scripts/test-connectors.js",
+    "check:marketplace": "node scripts/test-marketplace.js",
+    "probe:connector-ui": "electron scripts/probe-connector-ui.js --no-sandbox --disable-gpu",
+    "check:all": "npm run check:agent-config && npm run check:mcp && npm run check:connectors && npm run check:marketplace",
+    "test:close-race": "node scripts/test-close-race.js 6",
+    "test:pick-window": "node scripts/test-pick-main-window.js",
+    "test:clone-follow": "node scripts/test-clone-follow.js",
+    "prebuild": "node scripts/copy-build-resources.js && node scripts/build-rdp-host.js",
     "build:win-dir": "npm run prebuild && electron-builder --win --x64 --dir",
     "build:web-installer": "node scripts/build-web-installer.js",
+    "build:linux": "node scripts/copy-build-resources.js && electron-builder --linux --x64",
+    "build:mac": "node scripts/copy-build-resources.js && electron-builder --mac --x64 --arm64",
     "optimize:cursors": "electron scripts/optimize-cursor-assets.js",
     "test:cursor": "electron scripts/test-cursor-perf.js",
     "test:active-provider": "electron scripts/test-ai-active-provider.js"
@@ -26,8 +38,10 @@
     "files": [
       "src/**/*",
       "assets/**/*",
-      "!assets/cursors/_source/**",
       "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/sherpa-onnx-*/**"
     ],
     "directories": {
       "output": "dist",
@@ -43,7 +57,36 @@
         }
       ],
       "icon": "assets/icons/icon.ico",
-      "requestedExecutionLevel": "asInvoker"
+      "requestedExecutionLevel": "asInvoker",
+      "files": [
+        "tools/RdpHost.Native/桌面分身.exe",
+        "tools/register-rdp-elevation.ps1",
+        "tools/run-elevated.ps1"
+      ],
+      "asarUnpack": [
+        "tools/RdpHost.Native/桌面分身.exe",
+        "tools/register-rdp-elevation.ps1",
+        "tools/run-elevated.ps1"
+      ]
+    },
+    "linux": {
+      "target": [
+        { "target": "AppImage", "arch": ["x64"] },
+        { "target": "deb", "arch": ["x64"] }
+      ],
+      "icon": "assets/icons",
+      "category": "Utility",
+      "maintainer": "浮灵饰界"
+    },
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["x64", "arm64"] },
+        { "target": "zip", "arch": ["x64", "arm64"] }
+      ],
+      "icon": "assets/icons/icon.icns",
+      "category": "public.app-category.utilities",
+      "identity": null,
+      "hardenedRuntime": false
     },
     "publish": {
       "provider": "github",
@@ -55,8 +98,11 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
     "electron-updater": "^6.8.9",
+    "js-yaml": "^4.1.0",
     "koffi": "^3.1.5",
+    "pdf-parse": "^2.4.5",
     "pixi-live2d-display": "^0.4.0",
-    "pixi.js": "^6.5.2"
+    "pixi.js": "^6.5.2",
+    "sherpa-onnx-node": "^1.13.8"
   }
 }

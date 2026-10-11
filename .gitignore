@@ -6,8 +6,12 @@ node_modules_cache/
 dist/
 out/
 build/
+installer-app/
 installer-app/resources/app.7z
 installer-app/resources/uninstaller.exe
+tools/**/bin/
+tools/**/obj/
+tools/nul
 
 # IDE
 .vscode/
@@ -37,17 +41,104 @@ yarn-error.log*
 # Temp build artifacts
 _main_js_full.txt
 _patch-tmp/
+*.fake-out.txt
+.fake-out.txt
+_rel.txt
+_enum.js
+check_aiops.js
 
-# Data
+# Data (user runtime data, models, caches — never commit)
 data/
 userData/
+
+# Workbuddy local memory
+.workbuddy/
+
+# Reference source / scratch
+_bgi_src/
+
+# Standalone release tools
+发布工具/
 
 # Temp
 tmp/
 temp/
 *.tmp
-# Native injector / build junk (public repo keeps source only)
+
+# Native injector / build junk
 *.bak
 *.dll
 src/main/taskbar-inject/*.bat
 src/main/taskbar-inject/*.zip
+
+# Debug / scratch scripts (prefixed underscore)
+scripts/_*.js
+scripts/_*.ps1
+scripts/_*.py
+scripts/_*.mjs
+
+# Icons scratch
+assets/icons/_exe_extract/
+
+# 第三方源码（本地引用即可，不进仓库）
+src/main/taskbar-inject/Detours-main/
+src/main/taskbar-inject/minhook-master/
+src/main/taskbar-inject/libminhook.a
+src/main/taskbar-inject/compile_error.txt
+
+# 编译/备份产物
+*.bak
+*.bak-*
+*.a
+*.obj
+*.pdb
+aiOps.js.bak-*
+
+# 其他项目 / 打包产物 / 更新包
+ai-lobster-website/
+uninstaller-app/
+update/
+dev-app-update.yml
+启动.bat
+开发模式.bat
+updateOps.js
+
+# 一次性调试/探针脚本（package.json 未引用的都不进仓库）
+# 策略：scripts/ 默认全 ignore，下方白名单用 ! 反选
+scripts/*
+!scripts/syntax-check.js
+!scripts/build-rdp-host.js
+!scripts/copy-build-resources.js
+!scripts/build-web-installer.js
+!scripts/sync-update-to-github.js
+!scripts/sync-website-version.js
+!scripts/check-agent-config.js
+!scripts/verify-agent-config-consumption.js
+!scripts/test-mcp.js
+!scripts/test-mcp-integration.js
+!scripts/test-connectors.js
+!scripts/test-marketplace.js
+!scripts/probe-connector-ui.js
+!scripts/test-pick-main-window.js
+!scripts/test-clone-follow.js
+!scripts/test-close-race.js
+!scripts/optimize-cursor-assets.js
+!scripts/test-cursor-perf.js
+!scripts/test-ai-active-provider.js
+!scripts/activate-key.js
+!scripts/fetch-modelscope-store.js
+!scripts/check-supabase-net.js
+!scripts/fake-llama-server.js
+!scripts/fake-mcp-server.js
+
+# 其他开发杂项
+assets/generate-installer-images.py
+
+# tools/ 运行时状态 & 编译产物
+tools/nul
+tools/RdpHost/
+tools/RdpHost.Native/*.obj
+tools/RdpHost.Native/*.res
+tools/RdpHost.Native/_*.txt
+tools/RdpHost.Native/*.pdb
+tools/RdpHost.Native/*.ilk

@@ -201,9 +201,13 @@ function setupMirrorInterceptor() {
     // 拦截 GitHub 下载相关请求：
     // 1. github.com/.../releases/download/ （Release 资产下载）
     // 2. objects.githubusercontent.com （GitHub CDN 实际下载地址）
+    // 3. release-assets.githubusercontent.com （GitHub Release 资产 CDN）
+    // 4. codeload.github.com （代码包下载）
     const isGithubDownload = !alreadyMirrored && (
       (url.includes('github.com') && url.includes('/releases/download/')) ||
-      url.includes('objects.githubusercontent.com')
+      url.includes('objects.githubusercontent.com') ||
+      url.includes('release-assets.githubusercontent.com') ||
+      url.includes('codeload.github.com')
     );
 
     if (isGithubDownload) {
@@ -302,7 +306,8 @@ function init() {
     console.error('[Updater] 更新错误:', err.message);
     // 下载失败时自动切换镜像（如果是网络错误）
     if (err.message && (err.message.includes('ETIMEDOUT') || err.message.includes('ECONNRESET') ||
-        err.message.includes('ENOTFOUND') || err.message.includes('网络') || err.message.includes('timeout'))) {
+        err.message.includes('ENOTFOUND') || err.message.includes('网络') || err.message.includes('timeout') ||
+        err.message.includes('getaddrinfo') || err.message.includes('DNS') || err.message.includes('ECONNREFUSED'))) {
       if (mirrorConfig.enabled) {
         const next = switchToNextMirror();
         console.log('[Updater] 下载失败，已自动切换镜像:', next.name);

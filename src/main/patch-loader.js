@@ -139,48 +139,77 @@ function init() {
 const originalLoad = Module._load;
 const originalResolveFilename = Module._resolveFilename;
 
+// ★ 把 require 的 request 解析成「src/main/...」补丁相对路径。
+//   优先用标准解析（Module._resolveFilename），但标准解析在「源码文件不存在」时
+//   会抛 "Cannot find module"（例如补丁新增了源码中没有的文件、或源码文件被误删）。
+//   此时改用手动推导：request 是相对路径（./ 或 ../）就相对 parent.filename 所在目录拼接，
+//   从而仍能命中补丁映射，保证补丁文件能覆盖源码缺失的场景。
+function resolvePatchRel(request, parent) {
+  // 1) 标准解析（源码存在时最准确）
+  try {
+    const resolved = originalResolveFilename(request, parent, false);
+    const norm = resolved.replace(/\\/g, '/');
+    const idx = norm.indexOf('/src/main/');
+    if (idx !== -1) return { rel: norm.substring(idx + 1), resolved };
+  } catch (e) {}
+  // 2) 源码缺失：从父模块目录手动推导相对路径
+  if (parent && parent.filename && (request.startsWith('./') || request.startsWith('../'))) {
+    try {
+      const abs = path.resolve(path.dirname(parent.filename), request);
+      const norm = abs.replace(/\\/g, '/');
+      const idx = norm.indexOf('/src/main/');
+      if (idx !== -1) return { rel: norm.substring(idx + 1), resolved: abs };
+    } catch (e) {}
+  }
+  // 3) 直接以 src/main/ 开头的请求
+  if (/^src\/main\//.test(request)) return { rel: request, resolved: null };
+  return null;
+}
+
 Module._load = function (request, parent, isMain) {
   // 只在初始化完成后才拦截（init 内部 require electron 时不应被拦截）
   if (initialized && patchFileMap && Object.keys(patchFileMap).length > 0 && parent && parent.filename) {
-    try {
-      // 解析 require 的绝对路径
-      const resolved = originalResolveFilename(request, parent, isMain);
-      const normalized = resolved.replace(/\\/g, '/');
-
-      // 只拦截 src/main/ 下的模块
-      const mainIdx = normalized.indexOf('/src/main/');
-      if (mainIdx !== -1) {
-        const relPath = normalized.substring(mainIdx + 1); // 如 "src/main/ipc/updateOps.js"
-
-        if (patchFileMap[relPath]) {
-          const patchFile = patchFileMap[relPath];
-          console.log('[PatchLoader] 加载补丁模块:', relPath);
-
-          // 使用 Module._compile 手动编译补丁文件
-          // 关键：将 filename 设为原始 app.asar 路径，这样补丁文件内部的
-          // 相对 require（如 require('./config')）会基于原始路径解析，
-          // 从而能正确找到 app.asar 中的依赖；若依赖也在补丁中则再次被钩子拦截
-          const mod = new Module(resolved, parent);
-          mod.filename = resolved;
-          mod.paths = Module._nodeModulePaths(path.dirname(resolved));
-
-          const ext = path.extname(patchFile).toLowerCase();
-          if (ext === '.json') {
-            // JSON 文件直接解析
-            mod.exports = JSON.parse(fs.readFileSync(patchFile, 'utf-8').replace(/^\uFEFF/, ''));
-          } else {
-            // JS 文件用 _compile 编译（自动处理 BOM）
-            const content = fs.readFileSync(patchFile, 'utf-8');
-            mod._compile(content, resolved);
-          }
-
-          mod.loaded = true;
-          return mod.exports;
-        }
+    const m = resolvePatchRel(request, parent);
+    if (m) {
+      // 手动推导出的相对路径可能不带扩展名（源码缺失时 originalResolveFilename 无法补全），
+      // 这里按常见扩展名补全以命中补丁映射。
+      let rel = m.rel;
+      if (!patchFileMap[rel]) {
+        if (patchFileMap[rel + '.js']) rel = rel + '.js';
+        else if (patchFileMap[rel + '.json']) rel = rel + '.json';
       }
-    } catch (e) {
-      // 解析失败或编译失败时，回退到原始加载逻辑
-      // 不打印错误，避免干扰正常的模块不存在等情况
+      if (patchFileMap[rel]) {
+      const patchFile = patchFileMap[rel];
+      // ★ 补丁文件路径优先：即使源码文件不存在（新增/被删），也能加载补丁版本
+      const resolved = m.resolved || path.resolve(path.dirname(parent.filename), request);
+      try {
+        console.log('[PatchLoader] 加载补丁模块:', rel);
+
+        // 使用 Module._compile 手动编译补丁文件
+        // 关键：将 filename 设为原始路径（app.asar 或源码路径），这样补丁文件内部的
+        // 相对 require（如 require('./config')）会基于原始路径解析，
+        // 从而能正确找到原始依赖；若依赖也在补丁中则再次被钩子拦截
+        const mod = new Module(resolved, parent);
+        mod.filename = resolved;
+        mod.paths = Module._nodeModulePaths(path.dirname(resolved));
+
+        const ext = path.extname(patchFile).toLowerCase();
+        if (ext === '.json') {
+          // JSON 文件直接解析
+          mod.exports = JSON.parse(fs.readFileSync(patchFile, 'utf-8').replace(/^\uFEFF/, ''));
+        } else {
+          // JS 文件用 _compile 编译（自动处理 BOM）
+          const content = fs.readFileSync(patchFile, 'utf-8');
+          mod._compile(content, resolved);
+        }
+
+        mod.loaded = true;
+        return mod.exports;
+      } catch (e) {
+        // 补丁文件编译失败：回退到原始加载逻辑（若源码存在则加载源码，否则会报模块不存在）
+        console.error('[PatchLoader] 补丁模块编译失败，回退源码:', rel, e.message);
+      }
+      }
     }
   }
 

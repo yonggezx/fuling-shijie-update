@@ -33,7 +33,7 @@ process.on('exit', () => {
 
 // ===== 文件占用检测与处理 =====
 // 打包时 electron-builder 需要删除并重建 win-unpacked/resources/app.asar。
-// 只要还有进程加载着它（残留的 electron/node 构建进程、正在跑的 AI龙虾），
+// 只要还有进程加载着它（残留的 electron/node 构建进程、正在跑的 浮灵饰界），
 // 删除就会失败并报 ERR_ELECTRON_BUILDER_CANNOT_EXECUTE，整个安装器构建中断。
 // 这里在构建前先检测占用，必要时改用临时目录构建，绕开被锁的文件。
 function isFileLocked(p) {
@@ -63,6 +63,68 @@ function listSuspectProcesses() {
       .filter(n => /^(node|electron|app-builder|浮灵饰界|灵汐|FulingShijie)/i.test(n));
     return Array.from(new Set(names));
   } catch (e) { return []; }
+}
+
+// ========== 防复发断言：桌面分身宿主必须真实落在 app.asar.unpacked ==========
+// 历史坑（2026-10-06）：electron-builder 一度把“空的 tools/”打进 app.asar.unpacked，
+// 安装包里没有 桌面分身.exe，运行时 spawn 失败 → 打包版桌面分身起不来。本断言在
+// electron-builder 打包后硬性校验宿主完整落地，缺失即 exit(1)，杜绝“静默残包”。
+// 注意 桌面分身.exe 是原生 Win32 宿主（无 .NET 依赖，单文件 ~150KB+），
+// 打包时只需校验这一个 exe 落地即可；不需要、也不存在托管程序集。
+function assertHostExeInUnpacked() {
+  const relBase = path.join('resources', 'app.asar.unpacked', 'tools', 'RdpHost.Native');
+  const mustExist = ['桌面分身.exe'];
+  const missing = mustExist.filter(f => !fs.existsSync(path.join(winUnpacked, relBase, f)));
+  if (missing.length) {
+    err('防复发断言失败：桌面分身宿主未完整打包进 app.asar.unpacked，缺少: ' + missing.join(', '));
+    err('  基准目录: ' + path.join(winUnpacked, relBase));
+    err('  请确认：① scripts/build-rdp-host.js 已编译出 桌面分身.exe；② package.json 的 build.files/asarUnpack 含 tools/RdpHost.Native/桌面分身.exe');
+    console.error('\x1b[31m[error]\x1b[0m 存在“空 tools/”残包风险，已中止安装器构建。');
+    process.exit(1);
+  }
+  const st = fs.statSync(path.join(winUnpacked, relBase, '桌面分身.exe'));
+  log('防复发断言通过：桌面分身宿主已正确打包 (桌面分身.exe ' + (st.size / 1024).toFixed(0) + ' KB, 原生 Win32)');
+}
+
+// ========== 纯 Node 校验 zip 结构（不依赖 7z/powershell） ==========
+// 读取 EOCD → 中央目录 → 逐个核对本地文件头签名，确认归档未损坏。
+// 本环境 Node 无法可靠 spawn 7z.exe（返回 EBUSY），故用此函数代替 `7z t`。
+function verifyZip(zipPath) {
+  const fd = fs.openSync(zipPath, 'r');
+  try {
+    const st = fs.fstatSync(fd);
+    if (st.size < 22) return false;
+    const maxBack = Math.min(st.size, 65557);
+    const tail = Buffer.alloc(maxBack);
+    fs.readSync(fd, tail, 0, maxBack, st.size - maxBack);
+    let eocd = -1;
+    for (let i = maxBack - 22; i >= 0; i--) {
+      if (tail.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) return false;
+    const total = tail.readUInt16LE(eocd + 10);
+    const cdSize = tail.readUInt32LE(eocd + 12);
+    const cdOffset = tail.readUInt32LE(eocd + 16);
+    if (cdOffset + cdSize > st.size) return false;
+    const cd = Buffer.alloc(cdSize);
+    fs.readSync(fd, cd, 0, cdSize, cdOffset);
+    let p = 0, count = 0;
+    while (p + 46 <= cd.length) {
+      if (cd.readUInt32LE(p) !== 0x02014b50) break;
+      const nameLen = cd.readUInt16LE(p + 28);
+      const extraLen = cd.readUInt16LE(p + 30);
+      const commLen = cd.readUInt16LE(p + 32);
+      const localOffset = cd.readUInt32LE(p + 42);
+      const sig = Buffer.alloc(4);
+      fs.readSync(fd, sig, 0, 4, localOffset);
+      if (sig.readUInt32LE(0) !== 0x04034b50) return false;
+      p += 46 + nameLen + extraLen + commLen;
+      count++;
+    }
+    return count === total && total > 0;
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 // ========== Step 0: 检查前置条件 ==========
@@ -122,6 +184,28 @@ function getLatestMtime(dir) {
   return latest;
 }
 
+/**
+ * 检查目录下所有源码文件是否都早于 refMtime（用于判断安装器/卸载器是否需要重建）。
+ * excludeDirs: 跳过的子目录名（如 dist, node_modules, resources）。
+ */
+function allSourceOlderThan(dir, refMtime, excludeDirs) {
+  if (!fs.existsSync(dir)) return true;
+  const exclude = new Set(excludeDirs || []);
+  try {
+    const items = fs.readdirSync(dir, { withFileTypes: true });
+    for (const item of items) {
+      if (exclude.has(item.name)) continue;
+      const fullPath = path.join(dir, item.name);
+      if (item.isDirectory()) {
+        if (!allSourceOlderThan(fullPath, refMtime, [])) return false;
+      } else if (item.isFile()) {
+        if (fs.statSync(fullPath).mtimeMs > refMtime) return false;
+      }
+    }
+  } catch (e) { return false; }
+  return true;
+}
+
 function ensureFreshWinUnpacked() {
   const asarPath = path.join(winUnpacked, 'resources', 'app.asar');
   let embeddedVersion = null;
@@ -147,7 +231,7 @@ function ensureFreshWinUnpacked() {
 
   if (!missing && !versionMismatch && !mtimeStale) {
     log('win-unpacked 校验通过（版本 ' + embeddedVersion + '，源码无变更），跳过重建');
-    return;
+    return false;
   }
 
   let reason;
@@ -196,6 +280,12 @@ function ensureFreshWinUnpacked() {
     });
     if (prebuildR.status !== 0) return false;
 
+    // 同步编译「桌面分身」宿主（原生 Win32，MSVC），否则 app.asar.unpacked 里缺 桌面分身.exe
+    const hostR = spawnSync('node', [path.join(root, 'scripts', 'build-rdp-host.js')], {
+      cwd: root, stdio: 'inherit', env, windowsHide: true,
+    });
+    if (hostR.status !== 0) return false;
+
     const args = [path.join(root, 'node_modules', 'electron-builder', 'cli.js'), '--win', '--x64', '--dir'];
     if (path.resolve(targetDir) !== path.resolve(defaultWinUnpacked)) {
       // 自定义/临时构建目录：覆盖输出目录，使 win-unpacked 落在指定位置
@@ -231,6 +321,7 @@ function ensureFreshWinUnpacked() {
     process.exitCode = 1; setTimeout(() => { try { process.kill(process.pid); } catch(e) { process.exit(1); } }, 200);
   }
   log('win-unpacked 已刷新');
+  return true;
 }
 
 let forceRebuildWinUnpacked = false;
@@ -254,17 +345,48 @@ if (!customWinUnpacked) {
   }
 }
 
+let winUnpackedRebuilt = true;
 if (customWinUnpacked && !forceRebuildWinUnpacked) {
   log('使用自定义构建目录: ' + path.relative(root, winUnpacked));
 } else {
-  ensureFreshWinUnpacked();
+  winUnpackedRebuilt = ensureFreshWinUnpacked();
 }
+
+// 防复发断言：无论是否重建/跳过，都校验桌面分身宿主已真实落地到 app.asar.unpacked。
+// 放在缓存跳过判断之前，确保“空 tools/”残包即使在 skip 路径也会被抓出来。
+assertHostExeInUnpacked();
 if (!fs.existsSync(sevenZip)) {
-  err('7-Zip 未安装在 C:\\Program Files\\7-Zip\\');
-  process.exitCode = 1; setTimeout(() => { try { process.kill(process.pid); } catch(e) { process.exit(1); } }, 200);
+  log('\x1b[33m⚠ 未检测到 7z.exe（' + sevenZip + '），将使用纯 Node 实现打包 app.zip\x1b[0m');
 }
 log('前置条件检查通过');
 
+// ========== 缓存跳过：win-unpacked 未重建 + 安装器/卸载器源码无变更 + 产物存在 → 跳过整个安装器构建 ==========
+let skipInstallerBuild = false;
+if (!winUnpackedRebuilt) {
+  const installerDistDir = path.join(installerDir, 'dist');
+  let cachedInstallerExe = null;
+  if (fs.existsSync(installerDistDir)) {
+    const exes = fs.readdirSync(installerDistDir).filter(f => f.endsWith('.exe'));
+    if (exes.length > 0) cachedInstallerExe = path.join(installerDistDir, exes[0]);
+  }
+  if (cachedInstallerExe) {
+    const exeMtime = fs.statSync(cachedInstallerExe).mtimeMs;
+    const installerSourceFresh = allSourceOlderThan(installerDir, exeMtime, ['dist', 'node_modules', 'resources']);
+    const uninstallerSourceFresh = allSourceOlderThan(uninstallerDir, exeMtime, ['dist', 'node_modules']);
+    const asarPath = path.join(winUnpacked, 'resources', 'app.asar');
+    const appZipPath = path.join(resourcesDir, 'app.zip');
+    const appZipFresh = fs.existsSync(appZipPath) && fs.existsSync(asarPath) && fs.statSync(appZipPath).mtimeMs >= fs.statSync(asarPath).mtimeMs;
+    const uninstallerFresh = fs.existsSync(path.join(resourcesDir, 'uninstaller.exe'));
+    if (installerSourceFresh && uninstallerSourceFresh && appZipFresh && uninstallerFresh) {
+      log('win-unpacked 与安装器/卸载器源码均无变更，跳过安装器重建（使用缓存产物）');
+      skipInstallerBuild = true;
+    } else {
+      log(`缓存校验未通过: installerSrc=${installerSourceFresh} uninstallerSrc=${uninstallerSourceFresh} appZip=${appZipFresh} uninstaller=${uninstallerFresh}`);
+    }
+  }
+}
+
+if (!skipInstallerBuild) {
 // ========== Step 0.5: asar AES 加密（防 dump） ==========
 // 对 win-unpacked/resources/app.asar 内的核心 JS 文件进行 AES-256-CBC 加密
 // 运行时由 security-loader.js 自动解密加载，防止直接 dump 源码
@@ -300,57 +422,72 @@ if (fs.existsSync(appZip)) {
   try { fs.unlinkSync(appZip); } catch(e) {};
 }
 
-// 使用 7z 创建 zip 格式（兼容性最好，PowerShell Expand-Archive 可以解压）
-const packResult = spawnSync(sevenZip, [
-  'a', '-tzip', '-mx=5',
-  appZip,
-  winUnpacked + '\\*'
-], { stdio: 'pipe', windowsHide: true });
 // 7z 输出编码可能是 GBK 或 UTF-8，自动检测
 function decode7zOutput(buf) {
   if (!buf) return '';
   try {
     const iconv = require('iconv-lite');
-    // 先试 UTF-8
     const utf8 = buf.toString('utf8');
     if (!utf8.includes('\uFFFD')) return utf8;
-    // UTF-8 有乱码，用 GBK
     return iconv.decode(buf, 'gbk');
-  } catch(e) {
+  } catch (e) {
     return buf.toString('utf8');
   }
 }
-if (packResult.stdout) {
-  console.log(decode7zOutput(packResult.stdout));
-}
-if (packResult.stderr) {
-  console.error(decode7zOutput(packResult.stderr));
+
+let packOk = false;
+let packEngine = '';
+if (fs.existsSync(sevenZip)) {
+  const packResult = spawnSync(sevenZip, ['a', '-tzip', '-mx=5', appZip, winUnpacked + '\\*'], { stdio: 'pipe', windowsHide: true });
+  const launchFailed = !!(packResult.error && (packResult.error.code === 'EBUSY' || packResult.error.code === 'ETXTBSY'));
+  if (packResult.stdout) console.log(decode7zOutput(packResult.stdout));
+  if (packResult.stderr) console.error(decode7zOutput(packResult.stderr));
+  if (!launchFailed && packResult.status === 0 && fs.existsSync(appZip)) {
+    packOk = true;
+    packEngine = '7z';
+    log('app.zip 已用 7z 打包');
+  } else if (launchFailed) {
+    log('\x1b[33m⚠ 无法启动 7z.exe（' + packResult.error.code + '），回退纯 Node 实现\x1b[0m');
+  } else {
+    log('\x1b[33m⚠ 7z 打包返回 ' + packResult.status + '，回退纯 Node 实现\x1b[0m');
+  }
+} else {
+  log('\x1b[33m⚠ 未找到 7z.exe，使用纯 Node 实现打包\x1b[0m');
 }
 
-if (packResult.status !== 0) {
-  err('app.zip 打包失败');
-  process.exitCode = 1; setTimeout(() => { try { process.kill(process.pid); } catch(e) { process.exit(1); } }, 200);
+if (!packOk) {
+  // 回退：纯 Node 写 zip（node→node 在本环境始终可用，不依赖 7z/powershell）
+  const zipDirScript = path.join(root, 'scripts', 'zip-dir.js');
+  const r = spawnSync('node', [zipDirScript, winUnpacked, appZip], { stdio: 'inherit', windowsHide: true, timeout: 600000 });
+  if (r.status === 0 && fs.existsSync(appZip)) {
+    packOk = true;
+    packEngine = 'node-zip';
+    log('app.zip 已用纯 Node 实现打包');
+  } else {
+    err('app.zip 打包失败（7z 与纯 Node 实现均失败）' + (r.error ? ' ' + r.error.message : ''));
+    process.exitCode = 1; setTimeout(() => { try { process.kill(process.pid); } catch (e) { process.exit(1); } }, 200);
+  }
 }
 
-// 验证 app.zip 文件大小（不能是 0 字节或过小）
-const appZipStat = fs.statSync(appZip);
-if (appZipStat.size < 1024) {
-  err(`app.zip 文件过小 (${appZipStat.size} bytes)，打包可能失败`);
-  process.exitCode = 1; setTimeout(() => { try { process.kill(process.pid); } catch(e) { process.exit(1); } }, 200);
+// 验证 app.zip 文件大小（不能是 0 字节或过小）。先判空，否则 fs.statSync 抛 ENOENT
+// 会掩盖真正的“app.zip 打包失败”错误（历史坑）。
+let appZipStat = null;
+if (fs.existsSync(appZip)) appZipStat = fs.statSync(appZip);
+if (!appZipStat || appZipStat.size < 1024) {
+  err(`app.zip 文件未生成或过小 (${appZipStat ? appZipStat.size + ' bytes' : '不存在'})，打包可能失败`);
+  process.exitCode = 1; setTimeout(() => { try { process.kill(process.pid); } catch (e) { process.exit(1); } }, 200);
 }
 
-// 用 7z t 验证归档完整性
-log('验证 app.zip 完整性...');
-const testResult = spawnSync(sevenZip, ['t', appZip], { stdio: 'pipe', encoding: 'utf8', windowsHide: true });
-if (testResult.status !== 0) {
-  err('app.zip 完整性验证失败，归档可能损坏');
-  err(testResult.stdout || testResult.stderr || '');
-  process.exitCode = 1; setTimeout(() => { try { process.kill(process.pid); } catch(e) { process.exit(1); } }, 200);
+// 用纯 Node 校验 zip 结构完整性（不依赖 7z/powershell）
+if (appZipStat && !verifyZip(appZip)) {
+  err('app.zip 结构校验失败，归档可能损坏');
+  process.exitCode = 1; setTimeout(() => { try { process.kill(process.pid); } catch (e) { process.exit(1); } }, 200);
+} else if (appZipStat) {
+  log('app.zip 完整性验证通过');
 }
-log('app.zip 完整性验证通过');
 
-const appZipSize = (appZipStat.size / 1024 / 1024).toFixed(1);
-log(`app.zip 打包完成 (${appZipSize} MB)`);
+const appZipSize = appZipStat ? (appZipStat.size / 1024 / 1024).toFixed(1) : '0';
+log(`app.zip 打包完成 (${appZipSize} MB，引擎: ${packEngine})`);
 
 // ========== Step 2: 不再需要 7z.exe（改用 PowerShell Expand-Archive 解压） ==========
 log('跳过 7z.exe 复制（改用 PowerShell 内置解压）');
@@ -418,14 +555,19 @@ if (fs.existsSync(uninstallerIconSrc)) {
 
 // 设置 node_modules junction for uninstaller-app
 const unNmPath = path.join(uninstallerDir, 'node_modules');
-if (fs.existsSync(unNmPath) || fs.linkExistsSync?.(unNmPath)) {
-  try { fs.rmSync(unNmPath, { recursive: true, force: true }); } catch (e) {
-    try { fs.rmdirSync(unNmPath); } catch (e2) {}
-  }
-}
+// ⚠️ 必须用 lstat 判断链接是否存在：fs.existsSync 对「悬空 junction」（目标已不存在，
+// 如项目目录改名）返回 false，会跳过删除 → 后面 symlinkSync 报 EEXIST 又被静默吞掉，
+// 死链原样保留 → electron-builder 报 "Cannot compute electron version"。
+try {
+  const lst = fs.lstatSync(unNmPath);
+  if (lst.isSymbolicLink() || lst.isFile()) fs.unlinkSync(unNmPath);
+  else fs.rmSync(unNmPath, { recursive: true, force: true });
+} catch (e) {}
 try { fs.symlinkSync(path.join(root, 'node_modules'), unNmPath, 'junction'); } catch(e) {}
 if (fs.existsSync(unNmPath)) {
   log('卸载器 node_modules junction 已创建');
+} else {
+  err('卸载器 node_modules junction 创建失败（electron-builder 无法解析 electron 版本，构建必失败）');
 }
 
 // 清理 safe-delete shim 的触发环境变量
@@ -472,14 +614,14 @@ log('设置 node_modules ...');
 const nmPath = path.join(installerDir, 'node_modules');
 const parentNm = path.join(root, 'node_modules');
 
-// 移除已有的链接或目录
-if (fs.existsSync(nmPath) || fs.linkExistsSync?.(nmPath)) {
-  try {
-    fs.rmSync(nmPath, { recursive: true, force: true });
-  } catch (e) {
-    // 可能是 junction，用 rmdir
-    try { fs.rmdirSync(nmPath); } catch (e2) {}
-  }
+// 移除已有的链接或目录（⚠️ 用 lstat：悬空 junction 的 existsSync 为 false，删不掉会卡住后续创建）
+try {
+  const lst = fs.lstatSync(nmPath);
+  if (lst.isSymbolicLink() || lst.isFile()) fs.unlinkSync(nmPath);
+  else fs.rmSync(nmPath, { recursive: true, force: true });
+} catch (e) {
+  // 可能是普通目录且被占用，退回旧方案
+  try { fs.rmdirSync(nmPath); } catch (e2) {}
 }
 
 // 创建 junction（不需要管理员权限）
@@ -523,6 +665,8 @@ if (buildResult.status !== 0) {
   err('electron-builder 构建失败');
   process.exitCode = 1; setTimeout(() => { try { process.kill(process.pid); } catch(e) { process.exit(1); } }, 200);
 }
+
+} // end if (!skipInstallerBuild)
 
 // ========== Step 6: 检查产物 ==========
 log('检查构建产物...');

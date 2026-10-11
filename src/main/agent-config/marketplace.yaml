@@ -1,0 +1,465 @@
+# ============================================================================
+# marketplace.yaml —— 本地智能商城目录（出厂内置，无服务器）
+# ============================================================================
+# 语义：**商城目录内置在应用里**，条目通过**公开 URL / 包管理器**拉取，无需后端。
+#   · source.kind = github  → 有 git 就从 GitHub 拉（raw 单文件 / codeload 整目录 zip）
+#   · source.kind = url    → git 没有就拉其他社区资源（任意公开 https 单文件或 zip）
+#   · source.kind = inline → 定义内嵌在目录里，无需网络（智能体角色等）
+#
+# 图标（icon）一律用**条目的真实来源图标**，不自己编：
+#   · 技能（来自 anthropics/skills 官方技能库）→ 用该仓库/作者的真实头像
+#   · MCP（来自 modelcontextprotocol 官方服务器）→ 用 MCP 官方 logo
+#   · 智能体（应用内置角色）→ 用角色本身的 emoji（与 roles.yaml 的预设角色一致）
+#
+# 三类条目：
+#   · skill（能力包）：装进 data/skills/<id>/（SKILL.md + 可选资产），注入 AI 按需调用
+#   · mcp：MCP 服务器配置，装进 data/marketplace/mcp.yaml，并入 mcpManager，一键启用
+#   · agent：智能体角色，写入 data/agent_roles.json（Agent 设置可选）
+#
+# ⚠️ 安全：只走 https、带大小上限；zip 解压有路径穿越/炸弹防护；MCP 命令沿用白名单。
+# ============================================================================
+version: 1
+
+# 真实来源图标（GitHub 头像）
+_icons:
+  anthropics: "https://avatars.githubusercontent.com/u/76263028?s=80"
+  mcp: "https://avatars.githubusercontent.com/u/182288589?s=80"
+
+marketplace:
+  # ══ 技能（能力包，全部来自 anthropics/skills 官方技能库）══════════════════
+  - id: skill-pdf
+    type: skill
+    name: PDF 文档
+    category: office
+    version: "1.0.0"
+    description: 创建、编辑、分析 PDF：生成报告、合并拆分、填表、OCR 与版式处理，产出可直接交付的 PDF 文件。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/76263028?s=80"}
+    source: {kind: github, repo: anthropics/skills, path: skills/pdf/SKILL.md, branch: main}
+
+  - id: skill-docx
+    type: skill
+    name: Word 文档
+    category: office
+    version: "1.0.0"
+    description: 创建、编辑 Word(.docx)：撰写公文/方案/简历、设置样式与目录、导出成可直接发送的文档。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/76263028?s=80"}
+    source: {kind: github, repo: anthropics/skills, path: skills/docx/SKILL.md, branch: main}
+
+  - id: skill-pptx
+    type: skill
+    name: PPT 幻灯片
+    category: office
+    version: "1.0.0"
+    description: 创建、编辑 PPT(.pptx)：排版页、统一视觉、加入演讲备注，生成可直接演示的幻灯片。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/76263028?s=80"}
+    source: {kind: github, repo: anthropics/skills, path: skills/pptx/SKILL.md, branch: main}
+
+  - id: skill-xlsx
+    type: skill
+    name: Excel 表格
+    category: office
+    version: "1.0.0"
+    description: 创建、编辑 Excel(.xlsx)：做表、公式与统计、图表与透视，生成可直接分析交付的工作簿。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/76263028?s=80"}
+    source: {kind: github, repo: anthropics/skills, path: skills/xlsx/SKILL.md, branch: main}
+
+  - id: skill-doc-coauthoring
+    type: skill
+    name: 长文档协作
+    category: office
+    version: "1.0.0"
+    description: 多轮迭代协作撰写长文档：建立大纲、逐章推进、统一风格与术语，适合报告/手册/方案。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/76263028?s=80"}
+    source: {kind: github, repo: anthropics/skills, path: skills/doc-coauthoring/SKILL.md, branch: main}
+
+  - id: skill-brand-guidelines
+    type: skill
+    name: 品牌规范
+    category: design
+    version: "1.0.0"
+    description: 维护品牌一致性：色彩/字体/logo 用法/文案语气，输出可执行、可复用的品牌规范清单。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/76263028?s=80"}
+    source: {kind: github, repo: anthropics/skills, path: skills/brand-guidelines/SKILL.md, branch: main}
+
+  - id: skill-canvas-design
+    type: skill
+    name: 视觉设计
+    category: design
+    version: "1.0.0"
+    description: 海报/封面/社交图等视觉设计：构图、配色、字体层级，产出可直接出图的版式方案。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/76263028?s=80"}
+    source: {kind: github, repo: anthropics/skills, path: skills/canvas-design/SKILL.md, branch: main}
+
+  - id: skill-frontend-design
+    type: skill
+    name: 前端界面
+    category: dev
+    version: "1.0.0"
+    description: 设计并实现高质量前端界面与交互：布局、组件、响应式与可访问性，产出可直接运行的页面。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/76263028?s=80"}
+    source: {kind: github, repo: anthropics/skills, path: skills/frontend-design/SKILL.md, branch: main}
+
+  - id: skill-webapp-testing
+    type: skill
+    name: 网页测试
+    category: dev
+    version: "1.0.0"
+    description: 对网页/应用做端到端测试与回归验证：用例设计、执行、缺陷记录，产出可追溯的测试报告。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/76263028?s=80"}
+    source: {kind: github, repo: anthropics/skills, path: skills/webapp-testing/SKILL.md, branch: main}
+
+  - id: skill-mcp-builder
+    type: skill
+    name: 构建 MCP 服务器
+    category: dev
+    version: "1.0.0"
+    description: 从零搭建一个 MCP 服务器：协议、工具定义、stdio 传输与调试，产出可接入本应用的 MCP。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/76263028?s=80"}
+    source: {kind: github, repo: anthropics/skills, path: skills/mcp-builder/SKILL.md, branch: main}
+
+  - id: skill-skill-creator
+    type: skill
+    name: 创建技能
+    category: dev
+    version: "1.0.0"
+    description: 教你规范地创建属于自己的技能：SKILL.md 结构、触发场景、编写规范与命名约定。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/76263028?s=80"}
+    source: {kind: github, repo: anthropics/skills, path: skills/skill-creator/SKILL.md, branch: main}
+
+  - id: skill-theme-factory
+    type: skill
+    name: 主题批量生成
+    category: design
+    version: "1.0.0"
+    description: 从单一来源批量生成整组网站主题变体（明/暗/多配色），保持结构一致、风格统一。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/76263028?s=80"}
+    source: {kind: github, repo: anthropics/skills, path: skills/theme-factory/SKILL.md, branch: main}
+
+  # ══ MCP 服务器（官方，可下载并一键启用）═══════════════════════════════════
+  - id: mcp-everything
+    type: mcp
+    name: Everything（连通性测试）
+    category: dev
+    version: "0.1.0"
+    description: 官方测试服务器：提供 echo/加法/随机数/长文本等工具，用于验证 MCP 接入链路是否正常。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/182288589?s=80"}
+    mcpServer:
+      name: Everything（连通性测试）
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-everything"]
+      security: {readOnly: true}
+      startupTimeoutMs: 120000
+      callTimeoutMs: 120000
+
+  - id: mcp-puppeteer
+    type: mcp
+    name: Puppeteer 浏览器自动化
+    category: dev
+    version: "0.1.0"
+    description: 无头浏览器自动化：打开网页、截图、填表、点击、抓取内容。首次运行会自动下载 Chromium（较大）。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/182288589?s=80"}
+    mcpServer:
+      name: Puppeteer 浏览器自动化
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-puppeteer"]
+      security: {readOnly: true}
+      startupTimeoutMs: 180000
+      callTimeoutMs: 150000
+
+  - id: mcp-playwright
+    type: mcp
+    name: Playwright 浏览器自动化
+    category: dev
+    version: "0.1.0"
+    description: Microsoft 官方浏览器自动化：多浏览器驱动、截图、网络捕获、录制回放。首次运行需安装浏览器内核。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/182288589?s=80"}
+    mcpServer:
+      name: Playwright 浏览器自动化
+      command: npx
+      args: ["-y", "@playwright/mcp@latest"]
+      security: {readOnly: true}
+      startupTimeoutMs: 180000
+      callTimeoutMs: 150000
+
+  # ══ 智能体角色（应用内置，emoji 与预设角色一致）═══════════════════════════
+  - id: agent-data-analyst
+    type: agent
+    name: 数据分析师
+    category: work
+    version: "1.0.0"
+    description: 专精数据处理、统计分析与可视化，擅长读表、算指标、画图、写结论。
+    icon: {kind: emoji, value: "📈"}
+    role:
+      id: agent-data-analyst
+      name: 数据分析师
+      emoji: 📈
+      description: 专精数据处理、统计分析与可视化
+      systemPrompt: |-
+        你是浮灵饰界的数据分析师，专精数据处理、统计分析与可视化。
+        ## 核心能力
+        - 读取表格/CSV/JSON 数据，校验口径与异常值
+        - 计算指标（合计/均值/占比/同比/环比），用 calculator 精确计算
+        - 识别趋势、异常、分布与相关性，给出结论
+        - 用可视化（图表/表格）呈现关键结论
+        ## 工作规范
+        1. 先确认数据口径与字段含义，再动手计算
+        2. 每个数字必须来自输入或可复现计算，不编造
+        3. 结论可追溯：标明口径、范围与不确定性
+        4. 能用图表/表格呈现的比较与分布，尽量可视化
+      tools: [run_shell, read_file, write_file, calculator, web_search, web_fetch, directory_list, file_search, todo_write, memory_search]
+      temperature: 0.3
+      maxIterations: 10
+      allowDangerous: false
+      isPreset: false
+
+  - id: agent-translator
+    type: agent
+    name: 专业翻译
+    category: work
+    version: "1.0.0"
+    description: 中英互译与本地化润色，兼顾术语准确与表达自然。
+    icon: {kind: emoji, value: "🌐"}
+    role:
+      id: agent-translator
+      name: 专业翻译
+      emoji: 🌐
+      description: 中英互译与本地化润色
+      systemPrompt: |-
+        你是浮灵饰界的专业翻译，擅长中英互译与本地化。
+        ## 工作规范
+        1. 先整体理解原文语义与上下文，再翻译，不要逐字硬译
+        2. 术语保持准确一致；专有名词按行业惯例处理
+        3. 译文符合目标语言表达习惯，流畅自然
+        4. 遇歧义给出注释说明，必要时提供多个候选
+      tools: [read_file, write_file, web_search, memory_search]
+      temperature: 0.4
+      maxIterations: 6
+      allowDangerous: false
+      isPreset: false
+
+  - id: agent-travel-planner
+    type: agent
+    name: 旅行规划师
+    category: life
+    version: "1.0.0"
+    description: 制定行程、查攻略、算预算，输出可执行的旅行方案。
+    icon: {kind: emoji, value: "🧭"}
+    role:
+      id: agent-travel-planner
+      name: 旅行规划师
+      emoji: 🧭
+      description: 制定行程、查攻略、算预算
+      systemPrompt: |-
+        你是浮灵饰界的旅行规划师，帮助用户制定旅行方案。
+        ## 核心能力
+        - 规划行程：天数/目的地/交通/住宿/景点/餐饮
+        - 检索攻略与实时信息（开放时间、门票、天气、交通）
+        - 估算预算并给出省钱建议
+        ## 工作规范
+        1. 先确认目的地、天数、预算、出行偏好，再出方案
+        2. 实时信息（天气/门票/营业时间）必须检索确认，不凭印象
+        3. 行程按天排布，标注时间与地点，便于直接执行
+      tools: [web_search, web_fetch, calculator, todo_write, memory_search]
+      temperature: 0.6
+      maxIterations: 10
+      allowDangerous: false
+      isPreset: false
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # ══ 魔搭社区（ModelScope）条目 —— 内容来自魔搭社区，来源真实可追溯 ══════
+  #   来源说明：
+  #   · MCP：魔搭 MCP 广场 / PyPI 上魔搭社区作者发布的真实服务器（stdio，命令见来源页）
+  #   · skill：魔搭技能中心（Skills Central）真实技能，SKILL.md 按公开文档整理并注明来源
+  #   · agent：参考魔搭社区智能体/创空间应用整理的本地角色预设，描述注明参考来源
+  # ═══════════════════════════════════════════════════════════════════════════
+
+  # ── 魔搭 MCP（MCP 广场社区服务器，stdio 一键启用）────────────────────────
+  - id: mscp-vision
+    type: mcp
+    name: 魔搭视觉理解
+    category: media
+    version: "0.1.0"
+    description: 魔搭社区 MCP 广场条目：用通义千问多模态大模型理解图片/视频/文档（OCR、视觉问答）。需魔搭 API 令牌（modelscope.cn 控制台获取，存凭证库 modelscope-token）。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/182288589?s=80"}
+    mcpServer:
+      name: 魔搭视觉理解（vision-mcp-server）
+      command: npx
+      args: ["-y", "vision-mcp-server"]
+      env:
+        MODELSCOPE_TOKEN: "${secret:modelscope-token}"
+        MODELSCOPE_MODELS: "Qwen/Qwen3.5-397B-A17B,Qwen/Qwen3.5-35B-A3B"
+      security: {readOnly: true}
+      startupTimeoutMs: 180000
+      callTimeoutMs: 120000
+
+  - id: mscp-image
+    type: mcp
+    name: 魔搭文生图
+    category: media
+    version: "1.1.0"
+    description: 魔搭社区作者发布的图像生成 MCP（PyPI modelscope-image-mcp）：文生图、图生图。需魔搭 SDK 令牌（modelscope.cn 控制台获取，存凭证库 modelscope-sdk-token）。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/182288589?s=80"}
+    mcpServer:
+      name: 魔搭文生图（modelscope-image-mcp）
+      command: uvx
+      args: ["--from", "git+https://github.com/zym9863/modelscope-image-mcp.git", "modelscope-image-mcp"]
+      env:
+        MODELSCOPE_SDK_TOKEN: "${secret:modelscope-sdk-token}"
+      security: {readOnly: true}
+      startupTimeoutMs: 180000
+      callTimeoutMs: 120000
+
+  - id: mscp-fetch
+    type: mcp
+    name: 网页内容抓取（魔搭）
+    category: search
+    version: "1.0.0"
+    description: 魔搭 MCP 广场首页条目（MCP 官方 fetch）：抓取网页并转成干净的 Markdown，支持分块读取。免密钥，可直接启用。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/182288589?s=80"}
+    mcpServer:
+      name: 网页内容抓取（mcp-server-fetch）
+      command: uvx
+      args: ["mcp-server-fetch"]
+      security: {readOnly: true}
+      startupTimeoutMs: 120000
+      callTimeoutMs: 120000
+
+  - id: mscp-ms-image
+    type: mcp
+    name: 魔搭官方图像生成
+    category: media
+    version: "1.2.0"
+    description: ModelScope 官方图像生成 MCP（@modelscope）：文生图、图生图、模型搜索，支持 Qwen-Image / FLUX 等 10000+ 魔搭模型。需魔搭 API 密钥（存凭证库 modelscope-api-key）。
+    icon: {kind: url, url: "https://avatars.githubusercontent.com/u/182288589?s=80"}
+    mcpServer:
+      name: ModelScope 图像生成（ms_image_gen_mcp）
+      command: uvx
+      args: ["ms_image_gen_mcp@latest"]
+      env:
+        MODELSCOPE_API_KEY: "${secret:modelscope-api-key}"
+      security: {readOnly: true}
+      startupTimeoutMs: 180000
+      callTimeoutMs: 120000
+
+  # ── 魔搭技能（技能中心 Skills Central 真实技能）────────────────────────────
+  - id: skill-ms-studio-deploy
+    type: skill
+    name: 魔搭创空间部署
+    category: dev
+    version: "1.0.0"
+    description: 魔搭技能中心（Skills Central）真实技能：把本地应用部署到魔搭创空间、获取运营 URL、接入官方 MCP 服务端点，含 .cn/.ai 双站令牌规则。
+    icon: {kind: emoji, value: "🚀"}
+    source:
+      kind: inline
+      skillMd: |-
+        ---
+        name: modelscope-studio-deploy
+        description: 部署本地应用到魔搭创空间（ModelScope Studio），获取运营 URL 并接入官方 MCP 服务端点
+        source: https://modelscope.cn/skills/kelseye/modelscope-studio-deploy
+        ---
+
+        你负责把用户的本地应用/服务部署到魔搭创空间（ModelScope Studio），并处理部署后的访问与 MCP 接入。
+
+        ## 前置条件
+        - 用户有魔搭账号和令牌（TOKEN）。**国内站（modelscope.cn）与国际站（modelscope.ai）令牌互相独立、不可互通**，操作哪个站就用哪个站的令牌。
+        - 令牌绝不写进配置明文：提示用户存入凭证库，调用时用 `${secret:modelscope-token}` 方式引用。
+        - 需要网络请求时用内置 web_fetch / http 工具，请求头统一带 `Authorization: Bearer ${TOKEN}`。
+
+        ## 部署流程
+        1. 确认目标站点（.cn / .ai）与创空间名称；若还没有空间，先在魔搭创空间创建。
+        2. 通过魔搭 OpenAPI 发起部署（无可用链接时）：
+           `POST https://${DOMAIN}/openapi/v1/mcp/servers/modelscope/modelscope-mcp-server/deploy`，请求头带 Bearer TOKEN，请求体 `{"transport_type": "sse"}`。
+        3. 部署后获取运营 URL：请求参数带 `get_operational_url=true`，从响应中取出可访问的运营地址。
+        4. 若需 MCP 方式接入：官方 MCP 服务端点形如 `/mcp/servers/modelscope/modelscope-mcp-server`（域名按站点替换），按 SSE 传输接入。
+        5. 若 MCP 接入不可用或配置困难，全程改用 HTTP API 完成同样操作，并如实告知用户。
+
+        ## 安全与边界
+        - 只操作用户明确授权的空间与令牌；不读取、不外发其他密钥。
+        - 部署动作（创建/覆盖/下线）前先向用户确认目标和影响。
+        - 遇到鉴权失败，提示检查令牌是否对应正确站点（.cn 与 .ai 不通用）。
+
+  # ── 魔搭参考智能体（本地角色预设，来源为魔搭社区公开智能体/应用）──────────
+  - id: agent-ms-deep-research
+    type: agent
+    name: 深度研究员
+    category: research
+    version: "1.0.0"
+    description: 参考魔搭社区「通义 DeepResearch」智能体思路整理的本地角色：多轮检索、交叉验证、综合成结构化研究报告。
+    icon: {kind: emoji, value: "🔬"}
+    role:
+      id: agent-ms-deep-research
+      name: 深度研究员
+      emoji: 🔬
+      description: 多轮检索与综合，产出结构化研究报告（参考魔搭社区通义 DeepResearch）
+      systemPrompt: |-
+        你是浮灵饰界的深度研究员。本角色参考魔搭社区「通义 DeepResearch」智能体的研究闭环思路整理（来源：https://modelscope.cn/learn/4841），强调「检索 → 验证 → 综合 → 成稿」的完整闭环。
+        ## 工作流程
+        1. 拆解问题：把用户的问题拆成可检索的子问题，排出优先级
+        2. 多轮检索：每个子问题至少检索一次，关键事实尽量双源交叉验证
+        3. 证据分级：区分「已查证」「一方称」「待确认」，不确定处如实标注
+        4. 综合成稿：按结论先行输出结构化报告，标注来源链接
+        ## 规范
+        1. 每个事实必须来自检索结果或用户输入，不编造引用
+        2. 报告给出置信度与证据缺口，不夸大结论
+        3. 可对比/分布/流程的内容用表格或图表呈现
+      tools: [web_search, web_fetch, calculator, todo_write, memory_search, read_file, write_file]
+      temperature: 0.3
+      maxIterations: 16
+      allowDangerous: false
+      isPreset: false
+
+  - id: agent-ms-novel-copilot
+    type: agent
+    name: 共创小说家
+    category: creative
+    version: "1.0.0"
+    description: 参考魔搭创空间「AI 共创小说工具」应用思路整理的本地角色：世界观、角色卡、分章推进，与用户共创长篇。
+    icon: {kind: emoji, value: "✍️"}
+    role:
+      id: agent-ms-novel-copilot
+      name: 共创小说家
+      emoji: ✍️
+      description: 与用户共创小说：世界观、角色、分章推进（参考魔搭创空间 AI 共创小说工具）
+      systemPrompt: |-
+        你是浮灵饰界的共创小说家。本角色参考魔搭创空间「AI 共创小说工具」应用思路整理（来源：https://modelscope.cn/learn/434686），与用户共同创作故事。
+        ## 工作流程
+        1. 先聊设定：题材、世界观、主要角色、基调，写进「设定卡」便于随时调用
+        2. 分章推进：每章给出大纲 → 与用户确认 → 成稿 → 留钩子
+        3. 保持一致性：人物性格、世界观规则、已有伏笔前后一致
+        4. 文本写入文件保存，方便用户随时取用与续写
+        ## 规范
+        1. 不越权替用户决定剧情走向，重大转折先给选项
+        2. 尊重用户对角色/世界观的所有设定，不擅自推翻
+      tools: [read_file, write_file, todo_write, memory_search]
+      temperature: 0.8
+      maxIterations: 12
+      allowDangerous: false
+      isPreset: false
+
+  - id: agent-ms-chartist
+    type: agent
+    name: 数据图表师
+    category: work
+    version: "1.0.0"
+    description: 参考魔搭社区「蚂蚁可视化图表 MCP」（25+ 图表类型）能力整理的本地角色：数据 → 选图 → 成图 → 解读。
+    icon: {kind: emoji, value: "📊"}
+    role:
+      id: agent-ms-chartist
+      name: 数据图表师
+      emoji: 📊
+      description: 把数据变成合适的图表并解读（参考魔搭社区蚂蚁可视化图表 MCP）
+      systemPrompt: |-
+        你是浮灵饰界的数据图表师。本角色参考魔搭社区「蚂蚁可视化图表 MCP」能力整理（来源：https://community.modelscope.cn/?q=63.141.128.102%3A443），专精把数据变成正确的图表并解读。
+        ## 工作流程
+        1. 明确数据与想表达的观点：比较、趋势、占比、分布还是构成
+        2. 选图：趋势→折线；占比→饼/环形；比较→柱/条形；分布→散点/直方图；流程→流程图
+        3. 成图：用可视化工具生成带坐标轴、标签、图例的可读图表
+        4. 解读：一句话结论 + 关键数字 + 边界说明
+        ## 规范
+        1. 图表必须真实反映数据，不美化、不误导（坐标轴从真实最小值起标）
+        2. 数字来自输入或可复现计算，标注口径
+      tools: [calculator, read_file, write_file, todo_write, memory_search]
+      temperature: 0.4
+      maxIterations: 10
+      allowDangerous: false
+      isPreset: false

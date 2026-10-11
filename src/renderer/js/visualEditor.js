@@ -609,7 +609,7 @@
       // 失败/叉号图标
       error: '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
       // 警告图标
-      warning: '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+      warning: '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><circle cx="12" cy="17" r="1.2" fill="currentColor" stroke="none"/></svg>',
       // 播放图标
       play: '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>',
       // 暂停图标
@@ -645,6 +645,10 @@
 
 
   const AI_SYS_PROMPT = `你是一个"浮灵饰界"桌面宠物灵汐的动作/外观协同助手，具备工具调用能力，可以进行多轮思考和完善。
+
+## 语言要求
+- **始终用中文思考和回复**：包括工具调用前的规划（reasoning）、对返回结果的分析、以及最终给出的代码与说明，都必须用中文表达（代码、骨骼名、表情名、标识符本身保持原样即可）。
+- 仅当用户明确用英文交流时才用英文回复；但思考过程仍尽量用中文。
 
 ## 工作流程（重要）
 1. **持续执行直到解决问题**：可以反复调用任何工具，直到用户的需求被完全满足。
@@ -764,7 +768,7 @@ ae.addKeyframe({t:1, bones:{lKnee:{x:0.9}, rKnee:{x:0.9}, lAnkle:{x:0.6}, rAnkle
         round++;
         updateStatus(`<div class="ve-ai-loading"><span class="ve-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="18" height="12" rx="2"/><path d="M12 8V4"/><circle cx="12" cy="3" r="1"/><path d="M8 14h.01"/><path d="M16 14h.01"/><path d="M9 18h6"/></svg></span> AI 思考中...</div>
           <div class="ve-ai-tool-history">
-            ${toolHistory.length > 0 ? '<div class="ve-ai-th-title">已调用工具：</div>' + toolHistory.map((t, i) => `<div class="ve-ai-th-item">${i+1}. ${getToolNameCN(t.name)} ${t.success ? '<span class="ve-icon ve-icon-success">` + successSVG + `</span>' : '<span class="ve-icon ve-icon-error">` + errorSVG + `</span>'} ${t.success ? ' ✅' : ' ❌'}</div>`).join('') : ''}
+            ${toolHistory.length > 0 ? '<div class="ve-ai-th-title">已调用工具：</div>' + toolHistory.map((t, i) => `<div class="ve-ai-th-item">${i+1}. ${getToolNameCN(t.name)} ${t.success ? '<span class="ve-icon ve-icon-success">` + successSVG + `</span>' : '<span class="ve-icon ve-icon-error">` + errorSVG + `</span>'}</div>`).join('') : ''}
           </div>`);
         
         // 调用AI

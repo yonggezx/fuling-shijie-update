@@ -1,0 +1,591 @@
+﻿# ============================================================================
+# mcp-servers.yaml —— MCP 服务器清单
+# ============================================================================
+# 选型依据：用户提供的《MCP Server 选型表》。
+# 原则：
+#   · 默认只启用「✅」档；「⚠️」档需要用户自己开（多半要 API Key 或有网络依赖）
+#   · 「❌」档**不写进来**，避免以后误开：everything 仅供开发测试、docker/k8s 要预装环境、
+#     playwright 依赖重且 Windows 打包坑多、postgres/mysql 与项目的 SQLite 无关
+#   · 密钥**绝不在这里写明文** —— 只写 ${env:XXX} 或 ${secret:xxx} 占位，
+#     实际值由 credentialStore（safeStorage）在启动时注入
+#
+# 加载优先级：用户目录（userData/agent-config）> 出厂目录
+# ============================================================================
+version: 1
+
+# ── 全局策略 ────────────────────────────────────────────────────────────────
+defaults:
+  transport: stdio
+  # 是否随应用启动时自动拉起。false 的只在用户手动连接时拉起
+  autoStart: false
+  # 启动超时（毫秒）。npx 首次要下载包，给足时间
+  startupTimeoutMs: 45000
+  # 单次 tools/call 超时（毫秒）
+  callTimeoutMs: 60000
+  # 是否写进 AGENT_SYSTEM_PROMPT（写进去模型才知道有这些工具）
+  exposeToAI: true
+
+# ── 安全约束（MCP 引入的是外部进程，默认全部收紧）────────────────────────────
+security:
+  # 只允许这几个可执行程序起MCP 子进程。**不要放开 npx 之外的包管理器**——
+  # npx 本身已能装任意包（等于任意代码执行），所以白名单里绝不能再出现 npm/pip/curl 之类。
+  # uv/uvx 是 python 生态的官方 runner，mcp-server-sqlite 靠它拉起。
+  allowedCommands:
+    - npx
+    - node
+    - python
+    - py
+    - uv
+    - uvx
+    - windows-mcp-c
+  # 允许 MCP 子进程访问的目录白名单（留空 = 不额外限制，仍受应用自身权限限制）
+  allowedRoots: []
+  # 禁止 MCP 工具触碰的路径（即使 server 声称支持文件系统访问）
+  deniedPaths:
+    - "C:\\Windows\\System32\\config"
+    - "C:\\Users\\*\\AppData\\Roaming\\Microsoft\\Credentials"
+  # 单个 server 最多暴露给模型的工具数，防止某个 server 塞爆上下文
+  maxToolsPerServer: 40
+  # MCP 工具名统一前缀，避免与内置 33 个工具重名
+  namePrefix: "mcp_"
+
+servers:
+  # ═══════════════════════════════════════════════════════════════════════
+  # 一、Anthropic 官方系列
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - id: filesystem
+    name: 本地文件访问
+    group: official
+    enabled: true
+    recommendation: recommended          # ✅ 强烈推荐
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "${env:MCP_FS_ROOTS}"]
+    description: 安全读写本地文件，支持目录白名单。用于读取 skills / config 目录。
+    # 只读为主：默认不给写权限，需要写时把 readOnly 改 false
+    env:
+      MCP_FS_ROOTS: "${env:MCP_FS_ROOTS}"   # 形如 C:\Users\xxx\.workbuddy;C:\path\to\project
+    security:
+      # 明确只读：即使 server 支持写入也不给
+      readOnly: true
+    toolLabels:
+      read_file: MCP 读取文件
+      read_multiple_files: MCP 批量读取
+      list_directory: MCP 列目录
+      directory_tree: MCP 目录树
+      search_files: MCP 搜索文件
+      get_file_info: MCP 文件信息
+    notes: |
+      allowedRoots 必须由用户在设置里指定，默认不给全盘。
+      readOnly=true 时 MCP 侧不会暴露写入类工具。
+
+  - id: git
+    name: 本地 Git
+    group: official
+    enabled: true
+    recommendation: recommended          # ✅ 推荐
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-git", "--repository", "${env:MCP_GIT_REPO}"]
+    description: 本地 Git 仓库操作：分支、提交记录、 diff、代码检索。不是 GitHub API。
+    env:
+      MCP_GIT_REPO: "${env:MCP_GIT_REPO}"     # 项目根目录
+    security:
+      # 会写.git 的操作（commit / branch 切换）视为需确认；只读命令不受影响
+      risky: true
+      writeCommands: ["git_commit", "git_add", "git_checkout", "git_create_branch"]
+    toolLabels:
+      git_status: MCP 查看状态
+      git_log: MCP 提交记录
+      git_diff: MCP 代码差异
+      git_show: MCP 查看提交
+      git_branch: MCP 分支操作
+      git_commit: MCP 提交
+    notes: 只操作本地仓库。writeCommands 里的工具执行前需用户确认。
+
+  - id: fetch
+    name: 网页抓取
+    group: official
+    enabled: true
+    recommendation: recommended          # ✅ 推荐
+    command: npx
+    args: ["-y", "mcp-server-fetch"]
+    description: 抓取网页并清洗成 Markdown。比内置 web_fetch 更适合读文档站。
+    security:
+      # 表格明确要求：禁止抓内网 / 127.0.0.1
+      denyPrivateHosts: true
+    toolLabels:
+      fetch: MCP 抓取网页
+    notes: denyPrivateHosts 会拦掉 127.0.0.1 / 10.x / 192.168.x / localhost。
+
+  - id: memory
+    name: 知识图谱记忆
+    group: official
+    enabled: true
+    recommendation: recommended          # ✅ 推荐
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-memory"]
+    description: 独立的知识图谱持久记忆，跨会话保存实体与关系，不污染对话上下文。
+    env:
+      MEMORY_FILE_PATH: "${env:MCP_MEMORY_PATH}"   # userData/mcp/memory.json
+    toolLabels:
+      create_entities: MCP 记录实体
+      create_relations: MCP 记录关系
+      search_nodes: MCP 检索记忆
+      read_graph: MCP 读取记忆图
+    notes: |
+      与内置 MemoryStore（.ai_workspace/memory）是两套东西：
+      内置的是对话摘要级记忆，MCP memory 是实体关系图谱。别混用。
+
+  - id: sequential-thinking
+    name: 分步思考
+    group: official
+    enabled: true
+    recommendation: recommended          # ✅ 推荐
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+    description: 分步拆解复杂任务，多轮推理。提升多步骤任务的稳定性。
+    toolLabels:
+      sequentialthinking: MCP 分步思考
+    notes: 体积小、无外部依赖。适合让模型在动手前把任务拆清楚。
+
+  - id: time
+    name: 时间工具
+    group: official
+    enabled: false
+    recommendation: optional            # ⚠️ 可选
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-time"]
+    description: 获取时间、时区换算、时间差计算。轻量无依赖。
+    toolLabels:
+      get_current_time: MCP 当前时间
+      convert_time: MCP 时区换算
+      calculate_time_diff: MCP 时间差
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 二、代码 & 开发类
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - id: github
+    name: GitHub
+    group: dev
+    enabled: true
+    recommendation: core                # ✅ 核心要用
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-github"]
+    description: GitHub 远程 API：仓库、Issue、PR、评论、提交文件。读写齐全。
+    # Token 走凭证库，绝不写进本文件
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${secret:mcp-github-token}"
+    security:
+      risky: true
+    toolLabels:
+      list_repositories: MCP 仓库列表
+      get_issue: MCP 查看Issue
+      create_issue: MCP 建Issue
+      list_pull_requests: MCP PR 列表
+      create_pull_request: MCP 建 PR
+      push_files: MCP 推送文件
+      search_code: MCP 代码检索
+    notes: |
+      token 存 credentialStore（safeStorage 加密），键名 mcp-github-token。
+      推到正式客户端前务必确认：写了 push_files 就等于允许改用户仓库，
+      policy 里应把 MCP 侧写操作一并列为需确认。
+
+  - id: gitmcp
+    name: GitHub（社区增强版）
+    group: dev
+    enabled: false
+    recommendation: fallback            # ⚠️ 备选
+    command: npx
+    args: ["-y", "gitmcp"]
+    description: 社区增强版 GitHub MCP，代码检索更强。稳定性弱于官方。
+    env:
+      GITHUB_TOKEN: "${secret:mcp-github-token}"
+    security:
+      risky: true
+      writeCommands: ["push_files", "create_branch", "create_commit", "push_commits"]
+    toolLabels:
+      search_code: MCP 增强代码检索
+      fetch_file: MCP 读取文件
+    notes: 与 github 只能二选一 —— 工具名会撞。
+
+  - id: openapi-mcp
+    name: 自定义 API 连接器
+    group: dev
+    enabled: true
+    recommendation: core                # ✅ 核心组件
+    command: npx
+    args: ["-y", "@anthropic-ai/openapi-mcp-server"]
+    description: >-
+      把任意 OpenAPI 接口自动转成 MCP 工具集。导入自定义 API（Gitee、企业内部接口等）
+      的通用引擎 —— 没有现成 MCP server 的服务都能靠它接进来。
+    env:
+      OPENAPI_SPEC_PATH: "${env:MCP_OPENAPI_SPEC}"   # 本地 openapi.json/yaml 路径
+    security:
+      # 导入的 spec 会自动生成工具，含不含写操作取决于目标 API —— 一律当高危处理，
+      # 逐个确认，避免「导入一个只读 API」里混着 DELETE 接口
+      risky: true
+      requireConfirmAll: true
+    toolLabels: {}                      # 工具名由导入的 spec 动态决定，运行时装配
+    dynamic:
+      # 工具名在运行时才知道，所以走通配符匹配
+      labelWildcard: true
+    notes: |
+      这是「没有 MCP 就自己造一个」的路径：拿到服务的 OpenAPI 文档 → 指向这里 →
+      自动生成工具。Gitee 等国内服务的官方 MCP 往往不完善，这条路更现实。
+
+  - id: sqlite
+    name: SQLite 查询
+    group: dev
+    enabled: true
+    recommendation: recommended          # ✅ 推荐
+    command: uvx
+    args: ["mcp-server-sqlite", "--db-path", "${env:MCP_SQLITE_PATH}"]
+    description: 自然语言查询 SQLite，只读。
+    env:
+      MCP_SQLITE_PATH: "${env:MCP_SQLITE_PATH}"     # 例如 runtime.db
+    security:
+      readOnly: true
+      # 明确禁止高危 SQL —— 自然语言生成的 SQL 不可全信
+      denyKeywords: ["DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "ATTACH", "PRAGMA"]
+    toolLabels:
+      read_query: MCP 查询数据库
+      list_tables: MCP 列出表
+      describe_table: MCP 表结构
+    notes: |
+      表格里点名的就是 runtime.db —— 这条接入能让模型直接查运行时状态库。
+      denyKeywords 是硬防线：自然语言转 SQL 很容易生成破坏性语句。
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 三、国内办公协作类
+  # ═══════════════════════════════════════════════════════════════════════
+  # 飞书走官方远程 Streamable HTTP MCP（https://mcp.feishu.cn/mcp），
+  # 不起子进程、不需 npx。鉴权靠请求头 X-Lark-MCP-TAT。
+
+  - id: feishu
+    name: 飞书云文档（官方远程 MCP）
+    group: office
+    enabled: true
+    recommendation: core
+    transport: http
+    url: https://mcp.feishu.cn/mcp
+    description: 飞书官方部署维护的远程 MCP：搜索/创建/读取/更新云文档、评论、通讯录用户。
+    headers:
+      # tenant_access_token（t- 开头）从飞书开放平台获取，存凭证库，绝不写明文
+      X-Lark-MCP-TAT: "${secret:mcp-feishu-tat}"
+    # 飞书要求显式声明允许调用的工具，否则服务端不暴露任何工具
+    allowedTools:
+      - search-user
+      - get-user
+      - search-doc
+      - create-doc
+      - fetch-doc
+      - update-doc
+      - list-docs
+      - get-comments
+      - add-comments
+    security:
+      risky: true
+      writeCommands: ["create-doc", "update-doc", "add-comments"]
+    notes: |
+      在飞书开放平台自建应用里拿到 tenant_access_token（t- 开头），
+      存入凭证库键 mcp-feishu-tat。注意 tenant_access_token 有效期约 2 小时，
+      过期后需重新获取（后续可改为用 app_id/app_secret 自动换取）。
+      钉钉/企业微信若有官方远程 MCP，按同样的 transport:http 写法接入。
+
+  - id: tavily
+    name: Tavily 联网搜索（远程 MCP）
+    group: search
+    enabled: true
+    recommendation: core
+    transport: http
+    # key 拼在 query 里，走凭证库，绝不写明文
+    url: "https://mcp.tavily.com/mcp/?tavilyApiKey=${secret:mcp-tavily-key}"
+    description: Tavily 官方远程 MCP：联网搜索与网页抽取，专为 AI 优化。
+    security:
+      readOnly: true
+    notes: |
+      在 tavily.com 控制台拿 API Key（tvly- 开头），存入凭证库键 mcp-tavily-key。
+      无需本地安装，Streamable HTTP 直连。
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 四、搜索 & 信息采集类（⚠️ 需 API Key）
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - id: firecrawl
+    name: Firecrawl 批量抓取（远程 MCP）
+    group: search
+    enabled: false
+    recommendation: optional
+    transport: http
+    url: "https://mcp.firecrawl.dev/mcp?apiKey=${secret:mcp-firecrawl-key}"
+    description: 批量网页抓取，支持 JS 渲染、PDF 提取，带限流。适合需要深度抓取文档站的场景。
+    security:
+      readOnly: true
+    notes: |
+      在 firecrawl.dev 控制台拿 API Key，存入凭证库键 mcp-firecrawl-key。
+      有额度限制，注意用量。
+
+  - id: brave-search
+    name: Brave 隐私搜索（远程 MCP）
+    group: search
+    enabled: false
+    recommendation: optional
+    transport: http
+    url: "https://mcp.brave.com/mcp/?api_key=${secret:mcp-brave-key}"
+    description: Brave 隐私搜索引擎，网页搜索结果不追踪用户。
+    security:
+      readOnly: true
+    notes: |
+      在 brave.com/search/api 拿 API Key，存入凭证库键 mcp-brave-key。
+      免费额度有限。
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 五、国内办公协作类
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - id: dingtalk
+    name: 钉钉办公（社区 MCP）
+    group: office
+    enabled: false
+    recommendation: optional
+    command: npx
+    args: ["-y", "@dingtalk/mcp-server-dingtalk"]
+    description: 钉钉消息发送、审批、日程、钉钉文档、多维表格。需要钉钉应用 AppId/AppSecret。
+    env:
+      DINGTALK_APP_KEY: "${secret:mcp-dingtalk-app-key}"
+      DINGTALK_APP_SECRET: "${secret:mcp-dingtalk-app-secret}"
+    security:
+      risky: true
+      writeCommands: ["send_message", "create_approval", "create_doc"]
+    notes: |
+      在钉钉开放平台创建企业内部应用，拿到 AppKey/AppSecret 存入凭证库。
+      适合企业内部消息推送与审批场景。
+
+  - id: wecom
+    name: 企业微信机器人（社区 MCP）
+    group: office
+    enabled: false
+    recommendation: optional
+    command: npx
+    args: ["-y", "@wecom/mcp-server-wecom"]
+    description: 企业微信机器人消息发送、群操作。基于机器人 Webhook 鉴权。
+    env:
+      WECOM_WEBHOOK_KEY: "${secret:mcp-wecom-webhook-key}"
+    security:
+      risky: true
+      writeCommands: ["send_text", "send_markdown", "send_image"]
+    notes: |
+      在企业微信群里添加机器人，拿到 Webhook Key 存入凭证库。
+      适合企业内部消息推送场景。
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 六、海外办公协作类
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - id: notion
+    name: Notion 知识库
+    group: office
+    enabled: false
+    recommendation: optional
+    command: npx
+    args: ["-y", "@notionhq/notion-mcp-server"]
+    description: Notion 页面读写、数据库管理、块操作、知识库检索。
+    env:
+      NOTION_TOKEN: "${secret:mcp-notion-token}"
+    security:
+      risky: true
+      writeCommands: ["create_page", "update_page", "create_database"]
+    notes: |
+      在 notion.so/my-integrations 拿到 Internal Integration Token，存入凭证库键 mcp-notion-token。
+      海外知识库场景，国内访问可能较慢。
+
+  - id: jira
+    name: Jira 工单管理
+    group: office
+    enabled: false
+    recommendation: optional
+    command: npx
+    args: ["-y", "@jira/mcp-server-jira"]
+    description: Jira 工单查询、Confluence 文档读写。适合开发工单场景。
+    env:
+      JIRA_URL: "${env:MCP_JIRA_URL}"
+      JIRA_EMAIL: "${env:MCP_JIRA_EMAIL}"
+      JIRA_API_TOKEN: "${secret:mcp-jira-token}"
+    security:
+      risky: true
+      writeCommands: ["create_issue", "transition_issue", "add_comment"]
+    notes: |
+      在 Atlassian 后台生成 API Token，存入凭证库键 mcp-jira-token。
+      企业项目管理场景，适合开发团队用。
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 七、数据库 & 向量检索类（后期扩展）
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - id: qdrant
+    name: Qdrant 向量数据库
+    group: vector
+    enabled: false
+    recommendation: late
+    command: npx
+    args: ["-y", "@qdrant/mcp-server-qdrant"]
+    description: 向量数据库 RAG 检索，知识库向量查询。项目后期做本地知识库时再加。
+    env:
+      QDRANT_URL: "${env:MCP_QDRANT_URL}"
+      QDRANT_API_KEY: "${secret:mcp-qdrant-key}"
+    security:
+      readOnly: true
+    notes: |
+      需要本地或远程 Qdrant 实例。后期做本地知识库检索时接入。
+
+  - id: chroma
+    name: Chroma 轻量向量库
+    group: vector
+    enabled: false
+    recommendation: late
+    command: uvx
+    args: ["chroma-mcp"]
+    description: 轻量本地向量库，适合小型知识库 RAG。
+    security:
+      readOnly: true
+    notes: |
+      纯本地运行，无需外部服务。轻量场景下比 Qdrant 更简单。
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 八、其他实用工具类
+  # ═══════════════════════════════════════════════════════════════════════
+
+  - id: weather
+    name: 天气查询
+    group: utility
+    enabled: false
+    recommendation: optional
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-weather"]
+    description: 天气查询、预报、空气质量。轻量无密钥版本。
+    security:
+      readOnly: true
+    toolLabels:
+      get_forecast: MCP 天气预报
+      get_current_weather: MCP 当前天气
+
+  - id: anki
+    name: Anki 记忆卡片
+    group: utility
+    enabled: false
+    recommendation: optional
+    command: npx
+    args: ["-y", "@nikildee/anki-mcp-server"]
+    description: Anki 卡片读写、记忆卡片管理。学习记忆卡片场景。
+    env:
+      ANKI_CONNECT_URL: "${env:MCP_ANKI_URL}"
+    security:
+      risky: true
+      writeCommands: ["create_card", "update_card", "delete_card"]
+    notes: |
+      需要先在 Anki 里安装 AnkiConnect 插件并保持 Anki 运行。
+      适合学习类用户做记忆卡片管理。
+
+  - id: docker
+    name: Docker 容器管理
+    group: dev
+    enabled: false
+    recommendation: optional
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-docker"]
+    description: 管理 Docker 容器、镜像、网络、卷。用户没装 Docker 时，AI 会提示或帮用户安装。
+    security:
+      # Docker 等于 root 权限，全部操作都要确认
+      risky: true
+      requireConfirmAll: true
+    toolLabels:
+      list_containers: MCP 列出容器
+      list_images: MCP 列出镜像
+      inspect_container: MCP 查看容器详情
+      container_logs: MCP 容器日志
+      run_container: MCP 运行容器
+      stop_container: MCP 停止容器
+      remove_container: MCP 删除容器
+      pull_image: MCP 拉取镜像
+    notes: |
+      需要用户本机已安装 Docker Desktop 或 Docker Engine。
+      未安装时 AI 会自动检测并引导用户安装（用 shell 工具下载安装包）。
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # 九、Windows 原生控制（Windows-MCP，UIA 语义层）
+  # ═══════════════════════════════════════════════════════════════════════
+  # 辩证选型：只暴露内置 33 个工具里【没有】的增量能力 —— UI Automation 元素语义层。
+  # 其余工具（Click/Type/Scroll/Move/Shortcut/Screenshot/Clipboard/Process/App/
+  # PowerShell/FileSystem/Scrape/Registry/Wait/DisplayInventory/ControlStatus）
+  # 与内置 control_computer / run_shell / 文件工具重复，或会绕过「强制桌面分身」隔离，
+  # 一律通过 --tools 白名单屏蔽，防止模型两条控制路径选错、打破隔离原则。
+
+  - id: windows-mcp
+    name: Windows 界面控制（C 原生版）
+    group: windows
+    enabled: true
+    autoEnable: true                  # 用户点名接入：启动即纳入启用集合，随用随拉
+    recommendation: optional
+    # 自编译 C 原生 exe（无需 Python/uv，启动即起，零依赖）
+    command: C:\Users\fan\Desktop\项目\windows-mcp-c\windows-mcp-c.exe
+    args: []
+    description: >-
+      纯 C/Win32 重写的 Windows MCP（对标 CursorTouch/Windows-MCP）：鼠标键盘注入、
+      UIA 元素树快照、等待元素、截图、剪贴板、文件/注册表、进程、通知、网页抓取。
+      stdio 传输，单文件 exe，无 Python 运行时依赖。
+    security:
+      readOnly: true
+      writeCommands: ["Click","Move","Type","Shortcut","Scroll","MultiSelect","MultiEdit","Notification","App","PowerShell","Registry","FileSystem"]
+    startupTimeoutMs: 8000               # 原生 exe 秒起
+    callTimeoutMs: 60000
+    toolLabels:
+      Click: MCP 鼠标点击
+      Move: MCP 移动/拖拽
+      Type: MCP 键盘输入
+      Shortcut: MCP 快捷键
+      Scroll: MCP 滚轮
+      Screenshot: MCP 截图
+      Snapshot: MCP 界面快照（UIA 树）
+      WaitFor: MCP 等待元素
+      Clipboard: MCP 剪贴板
+      FileSystem: MCP 文件操作
+      Registry: MCP 注册表
+      Process: MCP 进程
+      App: MCP 启动程序
+      PowerShell: MCP 执行 PowerShell
+      Notification: MCP 桌面通知
+      Scrape: MCP 抓取网页
+      MultiSelect: MCP 批量选择
+      MultiEdit: MCP 批量填写
+      Windows: MCP 窗口列表
+      DisplayInventory: MCP 显示器
+    notes: |
+      纯 C 编译的原生 exe，位于项目外 windows-mcp-c 目录，已加入命令白名单与信任路径。
+      首次使用可点「停用」关掉，需要时再「启用」。
+
+  # ═══════════════════════════════════════════════════════════════════════════
+# 十、明确不接入（表格标❌，此处仅记录原因防止以后误加）
+# ═══════════════════════════════════════════════════════════════════════════
+excluded:
+  - id: everything
+    reason: 官方测试用server，演示全部能力；绝不能进生产客户端
+  - id: playwright
+    reason: 依赖重、打包体积大、Windows 打包坑多；初期不需要
+  - id: kubernetes
+    reason: 服务端运维用，桌面客户端完全不需要
+  - id: postgres
+    reason: 项目用 SQLite，不需要 PG
+  - id: mysql
+    reason: 同上
+  - id: google-workspace
+    reason: 国内网络访问困难
+  - id: slack
+    reason: 国内访问受限
+  - id: zapier
+    reason: 远程服务依赖外网，国内访问不稳定
+
+# ── 用户自填服务器 ──────────────────────────────────────────────────────────
+# 设置页可写入这里的 customServers 来接任意 MCP server（飞书/钉钉/企微/Tavily 等）。
+# 约束与出厂清单完全一致：命令白名单 + 密钥只走凭证库。
+customServers: []

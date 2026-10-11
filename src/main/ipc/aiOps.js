@@ -3,7 +3,129 @@ const path = require('path');
 const crypto = require('crypto');
 const https = require('https');
 const http = require('http');
+const { exec } = require('child_process');
 const { URL } = require('url');
+
+// Agent 配置：已从 aiOps.js 外置到 src/main/agent-config/（core.md / tools.yaml / policy.yaml ...）
+const _agentCfgRaw = require('../config/agentConfig');
+const _agentCfg = _agentCfgRaw.load() || { tools: [], toolLabels: {}, presetRoles: [], policy: {}, corePrompt: '' };
+
+// MCP（外部工具服务器）：工具不进 AGENT_TOOLS 常量，而是**运行时动态追加**——
+// MCP server 可能随时被用户启停，schema 只有连上之后才知道。
+const _mcp = require('../mcp/mcpManager');
+
+// 智能商城：技能能力包索引注入系统提示词（由 main.js 在启动时 init 到 userData）
+const _marketplace = require('../marketplace/marketplaceManager');
+
+// ── 增强模块（2026-10 新增） ──────────────────────────────────────────────
+// 按「MCP 增强模块清单」补齐的核心能力：
+//   · reflector        —— 反思器：工具结果质量自检，防止"错误结果以为成功"
+//   · resultValidator  —— 结果校验器：格式/长度/敏感信息硬门禁
+//   · toolRouter       —— 工具路由：按用户问题筛选相关工具，省 token
+//   · mcpRetryPolicy   —— 失败降级&重试：区分错误类型自动恢复
+//   · contextCompressor—— 上下文压缩：长文本自动瘦身，省显存
+const _reflector = require('./reflector');
+const _resultValidator = require('./resultValidator');
+const _toolRouter = require('./toolRouter');
+const _mcpRetry = require('./mcpRetryPolicy');
+const _contextCompressor = require('./contextCompressor');
+
+/**
+ * MCP 生命周期包装：启停/改启用集合后必须让本模块的工具缓存失效，
+ * 否则模型会在接下来 5 秒里继续收到已经停掉的工具（然后反复调用一个死服务）。
+ */
+function _mcpInvalidate(res) { invalidateMcpTools(); return res; }
+
+/**
+ * 挑「主窗口」—— 桌面分身小窗定位锚点的基准。
+ *
+ * ⚠️ **绝对不能**用"标题含『浮灵』的第一个可见窗口"：
+ *   宠物窗口的标题是「浮灵饰界 - 灵汐」，同样含"浮灵"，而且它创建得更早，
+ *   会被优先选中。实测后果：用**宠物窗**的 bounds（324×466 DIP，右缘 1860 DIP）去定位小窗，
+ *   而 2560×1600 物理屏在 150% 缩放下逻辑工作区只有 1706 宽 → 右缘越界被夹到屏幕右边，
+ *   表现为"悬浮窗脱离页面浮在屏幕右侧"（用户 09:20 反馈的现象）。
+ *
+ * 判据：**面积最大的那个**才是主窗口（宠物窗只有几百像素宽，差两个数量级）。
+ * 也不要求 isVisible —— 主窗口收进托盘时分身仍要能贴到它原来的位置，
+ * 那时它是隐藏的，用可见性过滤会直接挑不到人。
+ */
+function pickMainWindow() {
+  const { BrowserWindow } = require('electron');
+  const wins = BrowserWindow.getAllWindows().filter((w) => {
+    try { return !w.isDestroyed(); } catch (e) { return false; }
+  });
+  if (!wins.length) return null;
+  const re = /浮灵|desktop|main|助手/i;
+  const cands = wins.filter((w) => { try { return re.test(w.getTitle() || ''); } catch (e) { return false; } });
+  const pool = cands.length ? cands : wins;
+  const area = (w) => { try { const b = w.getBounds(); return b.width * b.height; } catch (e) { return -1; } };
+  return pool.reduce((a, b) => (area(b) > area(a) ? b : a));
+}
+
+// 取主窗口 bounds（桌面分身小窗的定位锚点基准）
+function currentMainWindowBounds() {
+  try {
+    const w = pickMainWindow();
+    if (w) return w.getBounds();
+  } catch (e) { /* ignore */ }
+  return { x: 0, y: 0, width: 1200, height: 800 };
+}
+
+// 取主窗口 bounds + 渲染端实测的输入栏矩形 + 主窗口原生句柄。
+// 前两者给桌面分身预览小窗定位（贴输入栏上方），句柄给宿主做 Win32 owner 绑定
+// ——分身要跟主程序绑在一起（主窗口关了/收了，分身跟着走）。
+// AI 侧（ensure_clone_desktop / launch_in_clone）没有前端测量值可传，所以在主进程里
+// 直接问渲染端要一次；量不到就返回 null，desktopSession 会按窗口底部估算兜底。
+async function currentCloneAnchor() {
+  const winBounds = currentMainWindowBounds();
+  let anchorRect = null;
+  let ownerHwnd = 0;
+  try {
+    const target = pickMainWindow();
+    if (target && !target.isDestroyed()) {
+      try {
+        const buf = target.getNativeWindowHandle();
+        if (buf && buf.length >= 8) ownerHwnd = buf.readBigUInt64LE(0).toString();
+        else if (buf && buf.length >= 4) ownerHwnd = String(buf.readUInt32LE(0));
+      } catch (e) { ownerHwnd = 0; }
+      if (target.webContents) {
+        anchorRect = await target.webContents.executeJavaScript(
+          `(() => {
+             const el = document.querySelector('.chat-input-area')
+                     || document.querySelector('.chat-input-wrapper')
+                     || document.getElementById('chat-input');
+             if (!el) return null;
+             const r = el.getBoundingClientRect();
+             if (!r || r.width <= 0 || r.height <= 0) return null;
+             return { x: Math.round(window.screenX + r.left), y: Math.round(window.screenY + r.top),
+                      width: Math.round(r.width), height: Math.round(r.height) };
+           })()`, true);
+        if (anchorRect && !(anchorRect.width > 0)) anchorRect = null;
+      }
+    }
+  } catch (e) { anchorRect = null; }
+  return { winBounds, anchorRect, ownerHwnd };
+}
+
+/**
+ * 等一个"正在启动"的桌面分身变为 running（或 error）。
+ * 关键：避免 ensure_clone_desktop / launch_in_clone 在 state==='starting' 时再次调用
+ * DesktopSession.start() —— start 内部会先 taskkill 掉正在启动的宿主（desktopSession.js:297），
+ * 把刚拉起、还没连上的子会话杀掉，结果永远连不上 → 工具卡到超时。正确做法是等它就绪、复用同一次启动。
+ * @param {number} timeoutMs 最长等待（与 DesktopSession.start 的 75s 兜底对齐）
+ */
+async function waitCloneRunning(timeoutMs = 75000) {
+  const DesktopSession = require('../desktopSession');
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const s = DesktopSession.status();
+    if (s.state === 'running') return { success: true, state: 'running', hwnd: s.hwnd };
+    if (s.state === 'error') return { success: false, state: 'error', error: '桌面分身启动后进入错误状态' };
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  return { success: false, state: 'error', error: '等待桌面分身启动超时（子会话未能建立）' };
+}
+
 // 工具调用恢复相关纯函数（无 electron 依赖，可独立单测）
 const { extractToolCallFromText, getLastUserMessage, normalizeAgentMessages, createInlineThinkSplitter } = require('./agentToolUtils');
 // 长期记忆（memory_save / memory_search / memory_list / memory_delete 的存储层）
@@ -15,6 +137,185 @@ const LocalAiEngine = require('./localAiEngine');
 const ToolAutoInstall = require('./toolAutoInstall');
 // UI 自验证（capture_window / verify_ui 的截图与布局自检实现）
 const UiVerify = require('./uiVerify');
+// 项目上下文分析（选项目后自动分析，注入系统提示词；分析结果落盘到隐藏工作区供 AI 校验）
+const ProjectContext = require('./projectContext');
+// 项目隐藏工作区（选项目时创建 .ai_workspace/{memory,context,changes}，记忆与改动按项目隔离）
+const ProjectWorkspace = require('./projectWorkspace');
+// AI 进化记录（近期习惯/动向，用于个性化注入与「AI 进化训练」面板）
+const EvolutionStore = require('./evolutionStore');
+
+// ============================================================
+// 个性化（设置 → 功能设置）：回复风格 / 身份人格 / 自定义指令 / 系统提示词 / 近期动向
+// 2026-10-03 新增。这些配置统一放在 configManager 的 personalization 段。
+// ============================================================
+
+// 回复风格预设：键是配置值，值是要注入提示词的风格说明
+const REPLY_STYLES = {
+  default: '',
+  concise: '回复风格：简洁。能一句说清就不写两句，先给结论再给理由；不要铺垫、不要复述用户的话、不要客套结尾。',
+  detailed: '回复风格：细致。重要结论给依据（文件/行号/命令输出），必要时补一句原理；该展开的地方展开，但不灌水。',
+  warm: '回复风格：亲切自然。像真人对话一样有温度，但不腻；该说正事说正事。',
+  professional: '回复风格：专业严谨。用词准确，不确定就说不确定，不猜、不夸大；先事实后判断。',
+  humorous: '回复风格：轻松幽默。可以适当开玩笑活跃气氛，但涉及正事、报错、风险时立刻收住，认真答。'
+};
+
+const REPLY_STYLE_KEYS = Object.keys(REPLY_STYLES);
+
+/** 读 personalization 配置（容错：配置被删/损坏时回默认值）。 */
+function getPersonalization() {
+  const d = {
+    memoryEnabled: true,
+    autoRecordHabits: true,
+    evolveEnabled: true,
+    replyStyle: 'default',
+    personaName: '灵汐',
+    personaRole: '桌面 AI 助手',
+    personaDesc: '',
+    customInstructions: '',
+    systemPrompt: ''
+  };
+  try {
+    // eslint-disable-next-line global-require
+    const { getConfig } = require('../configManager');
+    const p = (getConfig() || {}).personalization;
+    if (!p || typeof p !== 'object') return d;
+    for (const k of Object.keys(d)) {
+      if (p[k] === undefined || p[k] === null) continue;
+      d[k] = typeof d[k] === 'boolean' ? !!p[k] : String(p[k]);
+    }
+  } catch (e) { /* 用默认值 */ }
+  if (!REPLY_STYLES.hasOwnProperty(d.replyStyle)) d.replyStyle = 'default';
+  return d;
+}
+
+/**
+ * 根据中文/英文程序名解析真实可执行路径（Windows）。
+ * 搜索顺序：App Paths 注册表 → 开始菜单快捷方式 → 常见安装目录。
+ * 找不到时返回原 name，不抛错。
+ * @param {string} name
+ * @returns {Promise<string>}
+ */
+async function resolveWindowsProgram(name) {
+  return new Promise((resolve) => {
+    if (!name || typeof name !== 'string') return resolve(name);
+    const trimmed = name.trim();
+    if (!trimmed) return resolve(name);
+    // 已经是绝对路径或带路径分隔符的命令，保持原样
+    if (/^[a-zA-Z]:[\\\/]/.test(trimmed) || trimmed.includes('\\') || trimmed.includes('/')) {
+      return resolve(trimmed);
+    }
+    // 去掉 .exe 后缀用于搜索
+    const searchName = trimmed.replace(/\.exe$/i, '');
+    const safeName = searchName.replace(/'/g, "''");
+    const psScript = [
+      '$ErrorActionPreference = "SilentlyContinue"',
+      `$name = '${safeName}'`,
+      '$found = $null',
+      '$regBases = @(',
+      '  "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths",',
+      '  "HKCU:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths",',
+      '  "HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths"',
+      ')',
+      'foreach ($base in $regBases) {',
+      '  if (Test-Path $base) {',
+      '    Get-ChildItem $base | ForEach-Object {',
+      '      $kn = $_.PSChildName',
+      '      if ($kn -ieq $name -or $kn -ieq "$name.exe" -or $kn -like "*$name*") {',
+      '        $v = (Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue)."(default)"',
+      '        if ($v) { $p = $v.Trim(\'"\'); if (Test-Path $p) { $found = $p } }',
+      '      }',
+      '    }',
+      '  }',
+      '  if ($found) { break }',
+      '}',
+      'if (-not $found) {',
+      '  $wsh = New-Object -ComObject WScript.Shell',
+      '  $dirs = @("$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs", "$env:ProgramData\\Microsoft\\Windows\\Start Menu\\Programs")',
+      '  foreach ($d in $dirs) {',
+      '    if (Test-Path $d) {',
+      '      Get-ChildItem $d -Recurse -Filter *.lnk -ErrorAction SilentlyContinue | ForEach-Object {',
+      '        $sc = $wsh.CreateShortcut($_.FullName)',
+      '        if ($_.BaseName -ieq $name -or $_.BaseName -like "*$name*" -or $sc.TargetPath -like "*$name*") {',
+      '          $found = $sc.TargetPath',
+      '        }',
+      '      }',
+      '    }',
+      '    if ($found) { break }',
+      '  }',
+      '}',
+      'if (-not $found) {',
+      '  $cpaths = @("$env:LOCALAPPDATA\\Programs", "$env:ProgramFiles", "${env:ProgramFiles(x86)}")',
+      '  foreach ($cp in $cpaths) {',
+      '    if (Test-Path $cp) {',
+      '      $t1 = Join-Path $cp "$name.exe"',
+      '      if (Test-Path $t1) { $found = $t1; break }',
+      '      $t2 = Join-Path $cp $name',
+      '      if (Test-Path $t2) { $found = $t2; break }',
+      '    }',
+      '  }',
+      '}',
+      'if ($found) { Write-Output $found }'
+    ].join('\n');
+    const psExe = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+    exec(`"${psExe}" -NoProfile -EncodedCommand ${encoded}`, { timeout: 10000, encoding: 'utf8' }, (err, stdout) => {
+      if (err || !stdout || !stdout.trim()) return resolve(trimmed);
+      resolve(stdout.trim());
+    });
+  });
+}
+
+/**
+ * 生成注入系统提示词的「个性化」段。
+ * 注意：这里只做**追加**，绝不替换角色/agent 的基础提示词 —— 否则工具调用规范会被冲掉。
+ * @param {object} opts { forAgent: boolean }
+ */
+function buildPersonalizationBlock(opts = {}) {
+  const p = getPersonalization();
+  const parts = [];
+
+  if (p.personaName || p.personaRole || p.personaDesc) {
+    const who = [];
+    if (p.personaName) who.push('名字叫「' + p.personaName + '」');
+    if (p.personaRole) who.push('身份是' + p.personaRole);
+    let s = '## 你的身份人格（用户设定，优先遵守）\n- 你是' + (who.join('，') || '桌面 AI 助手');
+    if (p.personaDesc) s += '\n- 用户对你的设定：' + p.personaDesc.replace(/\s+/g, ' ').slice(0, 600);
+    parts.push(s);
+  }
+
+  const style = REPLY_STYLES[p.replyStyle] || '';
+  if (style) parts.push('## 回复风格（用户选定）\n' + style);
+
+  if (p.customInstructions && p.customInstructions.trim()) {
+    parts.push('## 用户自定义指令（回答规则，优先级高于你的默认习惯）\n'
+      + p.customInstructions.trim().slice(0, 2000));
+  }
+
+  if (!p.memoryEnabled) {
+    parts.push('## 长期记忆\n- 用户已关闭长期记忆：**不要调用 memory_save / memory_update**，也不要假装记得以前的事。');
+  }
+
+  // 近期动向注入只看「进化训练」开关：记录停了但已积累的画像仍可用
+  if (p.evolveEnabled) {
+    let evo = '';
+    try { evo = EvolutionStore.contextBlock(5); } catch (e) { evo = ''; }
+    if (evo) parts.push(evo);
+  }
+
+  if (!parts.length) return '';
+  return (opts.forAgent ? '' : '') + parts.join('\n\n');
+}
+
+/** 记录一条「近期动向」，用于 AI 进化训练。永远不抛错、失败不影响对话。 */
+function recordEvolution(entry) {
+  try {
+    const p = getPersonalization();
+    if (!p.autoRecordHabits) return false;
+    return EvolutionStore.append(entry);
+  } catch (e) {
+    return false;
+  }
+}
 
 
 // 将 API 错误响应简化为用户可读的简短提示，避免展示原始 JSON
@@ -24,9 +325,12 @@ function simplifyApiError(statusCode, rawData) {
   try {
     const parsed = JSON.parse(rawData);
     const e = parsed.error || parsed;
-    detail = (e && (e.message || e.message_zh || e.code)) || parsed.message || '';
-    if (typeof detail !== 'string') detail = '';
+    detail = (e && (e.message || e.message_zh || e.code)) || parsed.message || parsed.msg || parsed.code || '';
+    // 数字型 code（如 {"error":{"code":1211}}）转成字符串，别当空处理
+    if (typeof detail !== 'string') detail = typeof detail === 'number' ? String(detail) : '';
   } catch (_) { detail = (rawData || '').toString(); }
+  // 提取不到结构化信息时保留原文片段——否则 400/422 只剩「请求失败（400）」，无从排查
+  if (!detail && rawData) detail = String(rawData).substring(0, 160);
   // 去掉详情中的 URL、request_id 等技术信息，只保留核心语义
   detail = detail.replace(/https?:\/\/\S+/g, '').replace(/request[_-]?id["':\s]+[a-f0-9-]+/gi, '').trim();
   if (detail.length > 80) detail = detail.substring(0, 80) + '...';
@@ -69,48 +373,123 @@ let statusCache = null;
 
 // 工具调用授权确认
 let pendingToolConfirm = null; // { resolve, tool, args }
-function requestToolConfirm(tool, args, emitFn) {
+// 会话内用户点过"允许执行"的工具：本轮 agentChat 内同工具不再弹窗，直接放行
+let sessionAllowedTools = new Set();
+
+function requestToolConfirm(tool, args, emitFn, isUserEnabled) {
+  // 用户本轮已允许过这个工具 → 直接放行，不再弹窗
+  if (sessionAllowedTools.has(tool)) {
+    return Promise.resolve({ allowed: true, remembered: true });
+  }
   return new Promise((resolve) => {
     pendingToolConfirm = { resolve, tool, args };
     emitFn('agent-tool-confirm', { tool, args });
-    // 30秒超时自动拒绝
+    // 确认超时（默认 120 秒）：用户"点慢了"不该导致任务失败。
+    // 已勾选授权过的工具（isUserEnabled=true）超时后自动放行——用户已经表达信任，
+    // 即使因参数被截断等原因需要弹窗核对，不点也不会失败；
+    // 未勾选过的工具超时后仍拒绝，保持安全、不静默执行风险操作。
     setTimeout(() => {
       if (pendingToolConfirm) {
         const p = pendingToolConfirm;
         pendingToolConfirm = null;
-        p.resolve({ allowed: false, reason: '确认超时（30秒）' });
+        if (isUserEnabled) {
+          p.resolve({ allowed: true, reason: '已勾选授权，等待确认超时后自动放行' });
+        } else {
+          p.resolve({ allowed: false, reason: '确认超时（120 秒）' });
+        }
       }
-    }, 30000);
+    }, 120000);
   });
 }
 function resolveToolConfirm(allowed) {
   if (pendingToolConfirm) {
     const p = pendingToolConfirm;
     pendingToolConfirm = null;
+    if (allowed && p.tool) sessionAllowedTools.add(p.tool);  // 记住本轮已允许
     p.resolve({ allowed: !!allowed });
+  }
+}
+
+// 【询问用户】（ask_user）：就"这条待办怎么做"向用户出方案选项（用户也可自定义输入）。
+// 与 requestToolConfirm 一样是单挂起槽位（agent 串行，同一时刻只会有一个问题在等）。
+let pendingUserAsk = null; // { resolve, id }
+function requestUserGuidance(args, emitFn) {
+  return new Promise((resolve) => {
+    const options = Array.isArray(args.options)
+      ? args.options.map(o => String(o)).filter(s => s.trim()).slice(0, 6)
+      : [];
+    const id = 'ask_' + Date.now();
+    pendingUserAsk = { resolve, id };
+    emitFn('agent-ask-user', {
+      id,
+      question: String(args.question || '请选择这条任务的做法：'),
+      options,
+      allowCustom: args.allow_custom !== false
+    });
+    // 10 分钟无应答 → 按模型最佳判断继续，不要把整个任务卡死在等待上
+    setTimeout(() => {
+      if (pendingUserAsk && pendingUserAsk.id === id) {
+        pendingUserAsk = null;
+        resolve({ success: true, answered: false, answer: '（用户长时间未选择，已按你判断的最佳方案继续，请在最终汇报里说明采用的做法）' });
+      }
+    }, 600000);
+  });
+}
+function resolveUserGuidance(payload) {
+  if (pendingUserAsk) {
+    const p = pendingUserAsk;
+    pendingUserAsk = null;
+    const ans = payload && typeof payload.answer === 'string' ? payload.answer.trim() : '';
+    p.resolve({ success: true, answered: !!ans, answer: ans || '（用户未填写内容）', source: (payload && payload.source) || 'custom' });
   }
 }
 // 有操作风险的工具（需要在设置中显式启用，且执行前需要确认）
 // 无风险工具（只读/安全）默认启用，不需要用户确认，直接执行
-const RISKY_TOOLS = new Set([
-  'run_shell',
-  'write_file',
-  'move_file',
-  'copy_file',
-  'create_directory',
-  'download_file',
-  'http_request',
-  'open_url'
-]);
+const RISKY_TOOLS = new Set(_agentCfg.policy.riskyTools || []);
 const TOOLS_REQUIRE_CONFIRM = RISKY_TOOLS;
 
 // 新增的只读/低风险工具：对**所有角色**默认放开（含用户早先保存的自定义角色）。
 // memory_* 只动本应用自己的 memory.json，capture/verify 只读画面与布局，都不碰用户文件。
-const TOOLS_ALWAYS_ALLOWED = [
-  'memory_save', 'memory_search', 'memory_list', 'memory_delete',
-  'capture_window', 'verify_ui', 'analyze_screenshot',
-  'todo_write', 'todo_update', 'todo_read'
-];
+const TOOLS_ALWAYS_ALLOWED = _agentCfg.policy.alwaysAllowed || [];
+
+// 桌面分身类工具首次启动要走 RDP 子会话建立（DesktopSession.start 自带 75s 兜底循环），
+// 通用工具的 60s 超时比它短，会提前把首次启动判成"超时"并断链（模型看到失败就接不上 launch_in_clone）。
+// 这类工具单独给更长的执行超时（120s，大于 75s），让子会话有完整时间连上。
+const CLONE_DESKTOP_TOOLS = new Set(['ensure_clone_desktop', 'launch_in_clone']);
+
+// 工具前置依赖：允许了 A，就应连带允许 A 必需的前置工具 B。
+// 目前只有一组——launch_in_clone / control_computer（对分身桌面操作）都必须先 ensure_clone_desktop
+// 把悬浮窗开起来，否则调用只会返回 needLaunch 错误。用依赖表兜底：即使日后有人把
+// ensure_clone_desktop 从 TOOLS_ALWAYS_ALLOWED 里挪走，也不会再断链。
+const TOOL_DEPENDENCIES = _agentCfg.policy.toolDependencies || {};
+
+// 计算角色最终可用的工具集合：角色自选范围 ∩ 已注册工具 → 并上"强制放开"白名单 → 展开前置依赖。
+// 抽成纯函数只为一件事：这条链路曾因白名单漏项（ensure_clone_desktop）而**静默**断链——
+// 模型点名工具、提取成功、却被 ensureToolEnabled 拒掉，日志里只留下一行"恢复链路中断"。
+// 有了这个纯函数，scripts/test-agent-tool-perm.js 能直接把每个预设角色跑一遍，回归挡住同类问题。
+function resolveRoleTools(roleToolsInput, allToolNames) {
+  const roleTools = (Array.isArray(roleToolsInput) && roleToolsInput.length > 0 ? roleToolsInput : allToolNames)
+    .filter(n => allToolNames.includes(n));
+  // 后加的低风险工具（记忆 / 界面自验证 / 桌面分身）对所有角色强制放开：
+  // 老版本保存的自定义角色 tools 里没有这些名字，不做并集的话升级后它们永久不可见。
+  TOOLS_ALWAYS_ALLOWED.forEach(n => {
+    if (allToolNames.includes(n) && !roleTools.includes(n)) roleTools.push(n);
+  });
+  // 前置依赖展开：角色允许 launch_in_clone / control_computer，就必然需要 ensure_clone_desktop
+  // （分身悬浮窗没开，启动程序/操作分身只会返回 needLaunch）。只对已注册工具生效，最多展开 3 层。
+  for (let depth = 0; depth < 3; depth++) {
+    let added = false;
+    for (const n of roleTools.slice()) {
+      const deps = TOOL_DEPENDENCIES[n];
+      if (!deps) continue;
+      for (const d of deps) {
+        if (allToolNames.includes(d) && !roleTools.includes(d)) { roleTools.push(d); added = true; }
+      }
+    }
+    if (!added) break;
+  }
+  return roleTools;
+}
 
 // 预设提供商模板
 const PROVIDER_PRESETS = {
@@ -729,7 +1108,7 @@ async function prepareLocalProvider(provider, onStatus) {
 
 // ==================== 对话 ====================
 
-async function chat({ messages, providerId, temperature, maxTokens, systemPrompt, silent, workdir }, broadcastFn) {
+async function chat({ messages, providerId, temperature, maxTokens, systemPrompt, silent, workdir, thinkMode }, broadcastFn) {
   const provider = findProvider(providerId);
   if (!provider) {
     return { success: false, error: '未找到AI提供商' };
@@ -740,8 +1119,16 @@ async function chat({ messages, providerId, temperature, maxTokens, systemPrompt
     if (notReady) { localRequestInFlight = false; return notReady; }
 
   const temp = temperature ?? aiConfig?.temperature ?? 0.7;
-  const tokens = maxTokens ?? aiConfig?.maxTokens ?? 2048;
-  let systemPromptFinal = systemPrompt || aiConfig?.systemPrompt || '';
+  // 思考模式需要额外的输出预算：思考和正文共用 max_tokens，
+  // 按非思考模式的额度发请求会把额度全花在思考上、正文输出为空。
+  const tokens = maxTokens ?? (thinkMode === true
+    ? Math.max(aiConfig?.maxTokens ?? 2048, 8192)
+    : (aiConfig?.maxTokens ?? 2048));
+  // 系统提示词：用户在「功能设置 → 个性化」里改的那份优先（2026-10-03 从 AI 配置页搬过来）
+  const pConfig = getPersonalization();
+  let systemPromptFinal = systemPrompt || pConfig.systemPrompt || aiConfig?.systemPrompt || '';
+  const personaBlock = buildPersonalizationBlock();
+  if (personaBlock) systemPromptFinal += (systemPromptFinal ? '\n\n' : '') + personaBlock;
   if (workdir) {
     systemPromptFinal += '\n\n## 当前项目工作目录\n- 你当前的工作目录（项目根）是：' + workdir + '\n- 所有相对路径都基于此目录解析；执行命令时也默认在此目录下运行。\n- 除非用户明确要求操作其他位置，否则不要把文件写到该目录之外。';
   }
@@ -754,13 +1141,14 @@ async function chat({ messages, providerId, temperature, maxTokens, systemPrompt
   formattedMessages.push(...normalizeAgentMessages(messages));
 
   try {
-    const result = await callProviderAPI(provider, formattedMessages, temp, tokens);
+    const result = await callProviderAPI(provider, formattedMessages, temp, tokens, false, null, thinkMode === true);
 
     // silent（如动作编辑器的 AI 调试）：不把结果作为聊天消息广播到聊天窗口
     if (broadcastFn && result.success && !silent) {
       broadcastFn('ai:response', {
         type: 'complete',
         content: result.content,
+        reasoning: result.reasoning || '',
         usage: result.data?.usage,
         providerId: provider.id
       });
@@ -781,7 +1169,7 @@ async function chat({ messages, providerId, temperature, maxTokens, systemPrompt
   }
 }
 
-async function streamChat({ messages, providerId, temperature, maxTokens, systemPrompt, workdir }, broadcastFn) {
+async function streamChat({ messages, providerId, temperature, maxTokens, systemPrompt, workdir, thinkMode }, broadcastFn) {
   chatCancelled = false;
   const provider = findProvider(providerId);
   if (!provider) {
@@ -794,8 +1182,15 @@ async function streamChat({ messages, providerId, temperature, maxTokens, system
     if (notReady) { localRequestInFlight = false; return notReady; }
 
   const temp = temperature ?? aiConfig?.temperature ?? 0.7;
-  const tokens = maxTokens ?? aiConfig?.maxTokens ?? 2048;
-  let systemPromptFinal = systemPrompt || aiConfig?.systemPrompt || '';
+  // 与 chat() 一致：思考模式要多留输出预算，否则思考吃满额度、正文为空
+  const tokens = maxTokens ?? (thinkMode === true
+    ? Math.max(aiConfig?.maxTokens ?? 2048, 8192)
+    : (aiConfig?.maxTokens ?? 2048));
+  // 系统提示词：用户在「功能设置 → 个性化」里改的那份优先（2026-10-03 从 AI 配置页搬过来）
+  const pConfig = getPersonalization();
+  let systemPromptFinal = systemPrompt || pConfig.systemPrompt || aiConfig?.systemPrompt || '';
+  const personaBlock = buildPersonalizationBlock();
+  if (personaBlock) systemPromptFinal += (systemPromptFinal ? '\n\n' : '') + personaBlock;
   if (workdir) {
     systemPromptFinal += '\n\n## 当前项目工作目录\n- 你当前的工作目录（项目根）是：' + workdir + '\n- 所有相对路径都基于此目录解析；执行命令时也默认在此目录下运行。\n- 除非用户明确要求操作其他位置，否则不要把文件写到该目录之外。';
   }
@@ -808,8 +1203,7 @@ async function streamChat({ messages, providerId, temperature, maxTokens, system
   formattedMessages.push(...normalizeAgentMessages(messages));
 
   try {
-    let streamReasoningStarted = false;
-    let streamContentStarted = false;
+    let streamReasoningText = '';
     const result = await callProviderAPI(provider, formattedMessages, temp, tokens, true, (delta) => {
       if (chatCancelled) return;
       if (broadcastFn) {
@@ -820,27 +1214,14 @@ async function streamChat({ messages, providerId, temperature, maxTokens, system
             content: delta
           });
         } else if (delta && delta.type === 'reasoning') {
-          // 思考过程：通过 stream-chunk 发送，加标记区分（普通模式下也能看到）
-          if (!streamReasoningStarted) {
-            streamReasoningStarted = true;
-            broadcastFn('ai:response', {
-              type: 'stream-chunk',
-              content: '\n▼ 思考过程\n'
-            });
-          }
+          // 思考过程：独立事件流式推送，渲染端放可折叠思考区实时滚动。
+          // 不再混进正文气泡（此前用 ▼/▲ 标记拼进正文 = 思考与回答写在一起）
+          streamReasoningText += delta.content || '';
           broadcastFn('ai:response', {
-            type: 'stream-chunk',
-            content: delta.content
+            type: 'stream-reasoning',
+            content: delta.content || ''
           });
         } else if (delta && delta.type === 'content') {
-          // 正式回答开始前，加分隔标记
-          if (streamReasoningStarted && !streamContentStarted) {
-            streamContentStarted = true;
-            broadcastFn('ai:response', {
-              type: 'stream-chunk',
-              content: '\n▲ 思考结束\n\n'
-            });
-          }
           // 正式回答
           broadcastFn('ai:response', {
             type: 'stream-chunk',
@@ -848,15 +1229,35 @@ async function streamChat({ messages, providerId, temperature, maxTokens, system
           });
         }
       }
-    });
+    }, thinkMode === true);
 
     if (broadcastFn && result.success) {
+      // 流式结束但正文为空：混合思考模型偶尔把额度全花在思考上、正文一个字没吐。
+      // 这时从思考尾部兜底捞一段当正文，否则用户看到的是"想半天什么都没说"。
+      let finalContent = result.content;
+      if (!String(finalContent || '').trim() && streamReasoningText.trim().length > 50) {
+        const parts = streamReasoningText.split(/\n+/).filter(s => s.trim().length > 10);
+        if (parts.length) {
+          finalContent = parts[parts.length - 1].trim();
+          console.log('[Chat] 正文为空，从思考末尾兜底提取回答(' + finalContent.length + '字符)');
+          broadcastFn('ai:response', { type: 'stream-chunk', content: finalContent });
+        }
+      }
       broadcastFn('ai:response', {
         type: 'stream-complete',
-        fullContent: result.content,
+        fullContent: finalContent,
+        reasoning: streamReasoningText,
         usage: result.data?.usage
       });
       broadcastFn('ai:provider-sync', { activeProvider: provider.id });
+      // 记录一条「近期动向」（普通对话也记，供 AI 进化训练）
+      recordEvolution({
+        mode: 'chat',
+        user: getLastUserMessage(messages),
+        project: workdir || '',
+        tools: [],
+        summary: (finalContent || '').slice(0, 200)
+      });
     }
 
     // 主动卸载 Ollama 模型，释放 GPU 显存
@@ -892,18 +1293,18 @@ function findProvider(providerId) {
 }
 
 // 统一调用入口，根据 type 分发
-async function callProviderAPI(provider, messages, temperature, maxTokens, stream = false, onStreamChunk = null) {
+async function callProviderAPI(provider, messages, temperature, maxTokens, stream = false, onStreamChunk = null, thinkMode = false) {
   const type = provider.type || 'openai';
   // 发送前统一消毒：非字符串 content、半截工具参数、孤立代理项都会让上游直接 400
   const safeMessages = sanitizeOutgoingMessages(messages, type === 'ollama');
   if (type === 'ollama') {
-    return callOllamaAPI(provider, safeMessages, temperature, maxTokens, stream, onStreamChunk);
+    return callOllamaAPI(provider, safeMessages, temperature, maxTokens, stream, onStreamChunk, thinkMode);
   }
-  return callOpenAICompatibleAPI(provider, safeMessages, temperature, maxTokens, stream, onStreamChunk);
+  return callOpenAICompatibleAPI(provider, safeMessages, temperature, maxTokens, stream, onStreamChunk, thinkMode);
 }
 
 // Ollama API（不同的请求格式和流式格式）
-function callOllamaAPI(provider, messages, temperature, maxTokens, stream = false, onStreamChunk = null) {
+function callOllamaAPI(provider, messages, temperature, maxTokens, stream = false, onStreamChunk = null, thinkMode = false) {
   return new Promise((resolve) => {
     const baseUrl = provider.apiUrl.replace(/\/$/, '');
     const url = new URL(baseUrl + '/api/chat');
@@ -913,6 +1314,9 @@ function callOllamaAPI(provider, messages, temperature, maxTokens, stream = fals
       model: provider.model,
       messages,
       stream,
+      // 思考开关必须显式下发：Ollama 的混合思考模型（如 qwen3）在 think 缺省时行为随版本变化，
+      // 不下发就是"由服务端决定" → 非思考模式下仍在思考 → 思考吃满 num_predict → 正文为空。
+      think: !!thinkMode,
       keep_alive: 0,  // 响应完成后立即从GPU显存卸载模型，避免长时间占用导致卡顿
       options: {
         temperature,
@@ -947,6 +1351,9 @@ function callOllamaAPI(provider, messages, temperature, maxTokens, stream = fals
             if (!line.trim()) continue;
             try {
               const parsed = JSON.parse(line);
+              // 思考过程（think:true 时 Ollama 放在 message.reasoning/thinking）单独转发，不混进正文
+              const rDelta = parsed.message?.reasoning || parsed.message?.thinking || parsed.reasoning || parsed.thinking || '';
+              if (rDelta && onStreamChunk) onStreamChunk({ type: 'reasoning', content: rDelta });
               const delta = parsed.message?.content || '';
               if (delta) {
                 fullContent += delta;
@@ -961,6 +1368,8 @@ function callOllamaAPI(provider, messages, temperature, maxTokens, stream = fals
           if (buffer.trim()) {
             try {
               const parsed = JSON.parse(buffer);
+              const rDelta = parsed.message?.reasoning || parsed.message?.thinking || parsed.reasoning || parsed.thinking || '';
+              if (rDelta && onStreamChunk) onStreamChunk({ type: 'reasoning', content: rDelta });
               const delta = parsed.message?.content || '';
               if (delta) {
                 fullContent += delta;
@@ -1019,7 +1428,7 @@ function callOllamaAPI(provider, messages, temperature, maxTokens, stream = fals
 }
 
 // OpenAI 兼容 API（支持 OpenAI、DashScope 百炼、DeepSeek 等）
-function callOpenAICompatibleAPI(provider, messages, temperature, maxTokens, stream = false, onStreamChunk = null) {
+function callOpenAICompatibleAPI(provider, messages, temperature, maxTokens, stream = false, onStreamChunk = null, thinkMode = false) {
   return new Promise((resolve) => {
     const apiUrl = normalizeApiUrl(provider.apiUrl);
     const url = new URL(apiUrl);
@@ -1035,8 +1444,9 @@ function callOpenAICompatibleAPI(provider, messages, temperature, maxTokens, str
     if (maxTokens) bodyObj.max_tokens = maxTokens;
     // 流式请求时要求返回 usage，否则 token 统计缺失
     if (stream && supportsStreamOptions(provider)) bodyObj.stream_options = { include_usage: true };
-    // 本地模型（Qwen3 等思考模型）默认启用思考过程，llama-server 需 chat_template_kwargs.enable_thinking
-    const thinkParams = thinkingParams(provider, true);
+    // 思考开关跟着用户的「思考模式」走：本地模型（Qwen3 等）要 chat_template_kwargs.enable_thinking，
+    // 云端按各家协议下发。之前这里写死 true，等于无视开关恒开思考 —— 思考吃满 max_tokens 后正文为空。
+    const thinkParams = thinkingParams(provider, thinkMode);
     if (Object.keys(thinkParams).length) Object.assign(bodyObj, thinkParams);
     const body = JSON.stringify(bodyObj);
 
@@ -1065,6 +1475,9 @@ function callOpenAICompatibleAPI(provider, messages, temperature, maxTokens, str
       let streamUsage = null;
 
       if (isStream) {
+        // content 里可能混着内联思考（本地 llama.cpp --reasoning-format none 时），
+        // 与 Agent 链路同款：用 createInlineThinkSplitter 拆成独立思考流，不进正文
+        const thinkSplitter = createInlineThinkSplitter();
         res.on('data', (chunk) => {
           const lines = chunk.toString().split('\n').filter(l => l.trim());
           for (const line of lines) {
@@ -1084,8 +1497,14 @@ function callOpenAICompatibleAPI(provider, messages, temperature, maxTokens, str
                 const contentDelta = delta.content || '';
                 const reasoningDelta = delta.reasoning_content || '';
                 if (contentDelta) {
-                  fullContent += contentDelta;
-                  if (onStreamChunk) onStreamChunk({ type: 'content', content: contentDelta });
+                  const split = thinkSplitter.push(contentDelta);
+                  if (split.reasoning) {
+                    if (onStreamChunk) onStreamChunk({ type: 'reasoning', content: split.reasoning });
+                  }
+                  if (split.content) {
+                    fullContent += split.content;
+                    if (onStreamChunk) onStreamChunk({ type: 'content', content: split.content });
+                  }
                 }
                 if (reasoningDelta) {
                   if (onStreamChunk) onStreamChunk({ type: 'reasoning', content: reasoningDelta });
@@ -1120,8 +1539,16 @@ function callOpenAICompatibleAPI(provider, messages, temperature, maxTokens, str
               || parsed.choices?.[0]?.delta?.content
               || parsed.output?.text
               || '';
-            const reasoning = parsed.choices?.[0]?.message?.reasoning_content || '';
-            if (reasoning) content = '▼ 思考过程\n' + reasoning + '\n▲ 思考结束\n\n' + content;
+            // 思考内容单独放 reasoning 字段，不再往正文里塞 "▼ 思考过程…" 前缀。
+            // 旧做法会让非思考模式下的回答变成一大段思考前言（用户看到的"回答异常"）。
+            const reasoning = parsed.choices?.[0]?.message?.reasoning_content
+              || parsed.choices?.[0]?.message?.reasoning
+              || '';
+            if (!content && reasoning) {
+              // 有些混合模型把回答写在 reasoning 里、正文留空 → 兜底取 reasoning 尾部当正文
+              const parts = String(reasoning).split(/\n+/).filter(s => s.trim().length > 10);
+              if (parts.length) content = parts[parts.length - 1].trim();
+            }
             if (!content && (parsed.error || parsed.code || parsed.message)) {
               const errMsg = parsed.error?.message || parsed.error || parsed.message || parsed.code || 'api error';
               resolve({ success: false, error: typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg), data: parsed, statusCode: res.statusCode });
@@ -1132,7 +1559,7 @@ function callOpenAICompatibleAPI(provider, messages, temperature, maxTokens, str
               resolve({ success: false, error: 'empty response (HTTP ' + res.statusCode + '): ' + snippet, data: parsed, statusCode: res.statusCode });
               return;
             }
-            resolve({ success: true, content, data: parsed, statusCode: res.statusCode });
+            resolve({ success: true, content, reasoning, data: parsed, statusCode: res.statusCode });
           } catch (e) {
             resolve({ success: false, error: 'parse failed: ' + e.message + ', raw: ' + data.slice(0, 300), data, statusCode: res.statusCode });
           }
@@ -1156,608 +1583,121 @@ function callOpenAICompatibleAPI(provider, messages, temperature, maxTokens, str
 // ========== Agent 引擎：工具调用 + 思考过程 + 多轮执行 ==========
 
 // 工具定义（OpenAI function calling 格式）
-const AGENT_TOOLS = [
-  {
-    type: 'function',
-    function: {
-      name: 'run_shell',
-      description: '执行 Windows 命令行命令，返回输出结果。仅限只读/安全命令，禁止删除系统文件等危险操作。',
-      parameters: {
-        type: 'object',
-        properties: {
-          command: { type: 'string', description: '要执行的命令，如 dir、ipconfig、node -v 等' },
-          timeout: { type: 'number', description: '超时时间（毫秒），默认 15000', default: 15000 }
-        },
-        required: ['command']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'read_file',
-      description: '读取文本文件内容，返回文件文本。用于查看配置、代码、日志等。',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: '文件绝对路径' }
-        },
-        required: ['path']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'write_file',
-      description: '写入文本文件，覆盖已有内容。用于保存配置、生成脚本等。',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: '文件绝对路径' },
-          content: { type: 'string', description: '要写入的文本内容' }
-        },
-        required: ['path', 'content']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'get_system_info',
-      description: '获取当前系统信息（操作系统、CPU、内存、Node版本、应用版本等）。'
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'pet_action',
-      description: '触发桌面宠物执行指定动作或表情。',
-      parameters: {
-        type: 'object',
-        properties: {
-          action: { type: 'string', description: '动作名称，如 shy、happy、sad 等' }
-        },
-        required: ['action']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'web_search',
-      description: '使用搜索引擎搜索网络信息，返回搜索结果列表。用于查询最新资讯、技术文档、百科知识等需要外部信息的任务。',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: '搜索关键词，如 "electron updater 教程"、"今天天气" 等' },
-          max_results: { type: 'number', description: '返回结果数量，默认 8，最多 20', default: 8 }
-        },
-        required: ['query']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'web_fetch',
-      description: '抓取指定 URL 的网页内容，返回页面文本。用于读取具体网页、文档、博客文章等详细内容。',
-      parameters: {
-        type: 'object',
-        properties: {
-          url: { type: 'string', description: '要抓取的网页 URL，必须以 http:// 或 https:// 开头' },
-          max_length: { type: 'number', description: '返回内容最大长度，默认 8000 字符', default: 8000 }
-        },
-        required: ['url']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'http_request',
-      description: '发送 HTTP 请求（GET/POST/PUT/DELETE），返回响应状态和内容。用于调用 API、测试接口等。',
-      parameters: {
-        type: 'object',
-        properties: {
-          url: { type: 'string', description: '请求 URL' },
-          method: { type: 'string', description: '请求方法，GET/POST/PUT/DELETE，默认 GET', default: 'GET' },
-          headers: { type: 'object', description: '请求头，如 {"Content-Type": "application/json"}' },
-          body: { type: 'string', description: '请求体内容' },
-          timeout: { type: 'number', description: '超时时间（毫秒），默认 15000', default: 15000 }
-        },
-        required: ['url']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'file_search',
-      description: '在指定目录中搜索文件，支持按名称、扩展名过滤。用于查找项目文件、配置文件、日志等。',
-      parameters: {
-        type: 'object',
-        properties: {
-          directory: { type: 'string', description: '搜索的根目录绝对路径' },
-          pattern: { type: 'string', description: '文件名匹配模式，支持通配符 *，如 "*.js"、"config*"' },
-          max_results: { type: 'number', description: '最大返回结果数，默认 50', default: 50 }
-        },
-        required: ['directory', 'pattern']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'directory_list',
-      description: '列出指定目录下的文件和子目录，返回名称、大小、修改时间等信息。',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: '目录绝对路径' },
-          show_hidden: { type: 'boolean', description: '是否显示隐藏文件，默认 false', default: false }
-        },
-        required: ['path']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'copy_file',
-      description: '复制文件或目录到目标位置。',
-      parameters: {
-        type: 'object',
-        properties: {
-          source: { type: 'string', description: '源文件或目录绝对路径' },
-          destination: { type: 'string', description: '目标文件或目录绝对路径' },
-          overwrite: { type: 'boolean', description: '是否覆盖已存在文件，默认 false', default: false }
-        },
-        required: ['source', 'destination']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'move_file',
-      description: '移动或重命名文件/目录。',
-      parameters: {
-        type: 'object',
-        properties: {
-          source: { type: 'string', description: '源文件或目录绝对路径' },
-          destination: { type: 'string', description: '目标文件或目录绝对路径' }
-        },
-        required: ['source', 'destination']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'create_directory',
-      description: '创建目录，支持递归创建多级目录。',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: '要创建的目录绝对路径' }
-        },
-        required: ['path']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'download_file',
-      description: '从 URL 下载文件到本地指定路径。',
-      parameters: {
-        type: 'object',
-        properties: {
-          url: { type: 'string', description: '文件下载 URL' },
-          destination: { type: 'string', description: '保存的本地绝对路径' },
-          timeout: { type: 'number', description: '超时时间（毫秒），默认 60000', default: 60000 }
-        },
-        required: ['url', 'destination']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'get_current_time',
-      description: '获取当前日期和时间，返回格式化的时间字符串。'
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'calculator',
-      description: '执行数学计算，支持加减乘除、幂运算、括号等复杂表达式。如 "2+3*4"、"(10-5)/2"、"Math.sqrt(16)"。',
-      parameters: {
-        type: 'object',
-        properties: {
-          expression: { type: 'string', description: '数学表达式，如 "2+3*4"、"Math.PI * 10^2"' }
-        },
-        required: ['expression']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'check_url',
-      description: '检查 URL 是否可访问，返回 HTTP 状态码和响应时间。用于验证链接有效性、测试网站可用性。',
-      parameters: {
-        type: 'object',
-        properties: {
-          url: { type: 'string', description: '要检查的 URL' },
-          timeout: { type: 'number', description: '超时时间（毫秒），默认 10000', default: 10000 }
-        },
-        required: ['url']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'open_url',
-      description: '在默认浏览器中打开指定 URL。',
-      parameters: {
-        type: 'object',
-        properties: {
-          url: { type: 'string', description: '要打开的网页 URL' }
-        },
-        required: ['url']
-      }
-    }
-  },
+const AGENT_TOOLS = _agentCfg.tools || [];
 
-  // ==================== 待办事项（需求整理 / 实现过程追踪） ====================
-  {
-    type: 'function',
-    function: {
-      name: 'todo_write',
-      description: '【需求整理·先做这一步】把用户的需求整理成一份待办清单并整表替换（首次规划、需求变更都用它）。每条必须写清"做到什么算完成"(done_when)，把模糊说法翻译成可验证的目标；这样用户能一眼确认你要做什么、怎么算做完。',
-      parameters: {
-        type: 'object',
-        properties: {
-          title: { type: 'string', description: '这次任务的一句话目标（便于用户确认），如"修复窄窗下工具栏按钮被裁"' },
-          items: {
-            type: 'array',
-            description: '待办条目（3~7 条最佳，最多 12 条）。按执行顺序排列。',
-            items: {
-              type: 'object',
-              properties: {
-                text: { type: 'string', description: '要做的事，动词开头、具体可执行；禁止"优化一下""处理相关问题"这类空话' },
-                status: { type: 'string', description: 'pending(待办) / in_progress(进行中，全局只能一条) / completed(已完成)', default: 'pending' },
-                done_when: { type: 'string', description: '完成判据：怎么算做完了（可观测、可验证），如"900px 窗口下 4 个按钮都完整可见"' },
-                note: { type: 'string', description: '补充说明或已完成的证据（如截图路径、验证结论）' },
-                id: { type: 'string', description: '已有条目的 id（更新时带上，保持条目身份稳定）' }
-              },
-              required: ['text']
-            }
-          }
-        },
-        required: ['items']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'todo_update',
-      description: '更新**单条**待办的状态/说明（日常推进进度用它，比整表重写省 token）。完成一条立刻标记，note 里写清结果或证据。传 status=in_progress 时其它进行中的会自动退回待办。',
-      parameters: {
-        type: 'object',
-        properties: {
-          id: { type: 'string', description: '待办 id（todo_write / todo_read 返回的 id）' },
-          text: { type: 'string', description: '没有 id 时用原文定位' },
-          status: { type: 'string', description: 'pending / in_progress / completed' },
-          note: { type: 'string', description: '结果说明或证据（如"已改 style.css 的 .panel-actions，验证 0 溢出"）' },
-          done_when: { type: 'string', description: '修正完成判据' }
-        }
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'todo_read',
-      description: '读取当前会话的待办清单与进度。开始一轮工作前确认"上一轮做到哪了"，或不确定条目 id 时用它。',
-      parameters: { type: 'object', properties: {} }
-    }
-  },
+// MCP 工具缓存：每次 agent 请求前调_mcp.collectTools() 刷新。
+// 为什么用缓存而不是每次现取：collectTools 要走 IPC 到子进程，
+// 每个 token 轮次都调一遍会让整轮对话慢一个数量级。
+// ⚠️ 必须带 revision：服务器被停掉后工具表就变了，但 TTL 还没到，
+//    不看 revision 会把已停掉的工具继续发给模型 → 模型反复调用一个不存在的服务。
+let _mcpToolCache = { at: 0, revision: -1, tools: [] };
+const _MCP_TOOL_TTL = 5000;   // 5 秒
 
-  // ==================== 长期记忆 ====================
-  {
-    type: 'function',
-    function: {
-      name: 'memory_save',
-      description: '把「跨会话仍然成立」的信息写入长期记忆，之后每次对话都会自动带上。适合记：用户偏好与习惯、项目约定与硬规则、环境限制、踩过的坑与修复结论。不要记闲聊、一次性任务、或能直接从代码/文件里读到的内容。',
-      parameters: {
-        type: 'object',
-        properties: {
-          text: { type: 'string', description: '要记住的内容，一句话讲清楚（不超过 500 字）' },
-          tags: { type: 'array', items: { type: 'string' }, description: '检索标签，如 ["electron","UI","用户偏好"]' },
-          kind: { type: 'string', description: '类型: fact(事实) / preference(偏好) / project(项目) / fix(修复经验) / note(备注)', default: 'note' },
-          pinned: { type: 'boolean', description: '置顶后必定注入系统提示词（慎用，只给几条最关键的）', default: false },
-          id: { type: 'string', description: '要覆盖的已有记忆 id（先用 memory_search 拿到），不传则新增' }
-        },
-        required: ['text']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'memory_search',
-      description: '在长期记忆里按关键词检索，返回命中的记忆条目、id、标签与相关度。修改/删除记忆前先用它拿到 id。',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: '检索关键词，如 "electron 透明"、"用户偏好"' },
-          limit: { type: 'number', description: '最多返回条数，默认 10', default: 10 }
-        },
-        required: ['query']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'memory_list',
-      description: '列出长期记忆（置顶优先、最近更新在前），可按标签或类型过滤。用于确认"我已经记了什么"。',
-      parameters: {
-        type: 'object',
-        properties: {
-          tag: { type: 'string', description: '按标签过滤' },
-          kind: { type: 'string', description: '按类型过滤: fact / preference / project / fix / note' },
-          limit: { type: 'number', description: '最多返回条数，默认 50', default: 50 }
-        }
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'memory_delete',
-      description: '删除长期记忆：给 id 删单条；给 query 则删掉关键词命中的若干条（如"忘掉关于 X 的记忆"）。',
-      parameters: {
-        type: 'object',
-        properties: {
-          id: { type: 'string', description: '要删除的记忆 id' },
-          query: { type: 'string', description: '按关键词删除（与 id 二选一）' },
-          limit: { type: 'number', description: '按关键词删除时的最大条数，默认 10', default: 10 }
-        }
-      }
-    }
-  },
+/**
+ * 全部可用工具 = 内置 33 个 + 已启用的 MCP 工具。
+ * 命中「TTL 未到且 revision 未变」时直接返回缓存。
+ */
+async function getAllTools() {
+  const now = Date.now();
+  const rev = _mcp.revision();
+  if (now - _mcpToolCache.at < _MCP_TOOL_TTL && _mcpToolCache.revision === rev) {
+    return AGENT_TOOLS.concat(_mcpToolCache.tools);
+  }
+  let mcpTools = [];
+  try {
+    mcpTools = await _mcp.collectTools();
+  } catch (e) {
+    console.warn('[MCP] 收集工具失败（不影响内置工具）:', e.message);
+  }
+  _mcpToolCache = { at: now, revision: _mcp.revision(), tools: mcpTools };
+  return AGENT_TOOLS.concat(mcpTools);
+}
 
-  // ==================== 截图 / 界面自验证 ====================
-  {
-    type: 'function',
-    function: {
-      name: 'capture_window',
-      description: '截取「需要验证的那个程序」的窗口画面并存成 PNG，返回文件路径。默认抓本应用自己的窗口（改完本程序界面后用这个）；被验证的程序不是本应用时，用 title 指定它的窗口标题关键字。',
-      parameters: {
-        type: 'object',
-        properties: {
-          which: { type: 'string', description: '抓本应用哪个窗口: main(主窗口, 默认) / pet(桌宠) / editor / debugLog，也可传窗口标题片段' },
-          title: { type: 'string', description: '抓其它程序的窗口：窗口标题关键字（传了 title 就忽略 which）' },
-          index: { type: 'number', description: '标题匹配到多个窗口时取第几个，默认 0' },
-          save_path: { type: 'string', description: '保存路径（绝对路径或文件名），默认存到 数据目录/screenshots/ 下自动命名' }
-        }
-      }
+/** 强制让缓存失效（启停 MCP server / 切换启用集合后调用） */
+function invalidateMcpTools() {
+  _mcpToolCache = { at: 0, revision: -1, tools: [] };
+}
+
+/** MCP 工具名列表（用于权限判定：会话模式必须拦住） */
+function getMcpToolNames() {
+  return _mcpToolCache.tools.map(t => t.function.name);
+}
+
+/** 工具中文名映射（用于界面显示，避免暴露英文命令名）
+ *  MCP 工具的展示名优先用 mcp-servers.yaml 里每个 server 声明的 toolLabels，
+ *  没登记的退化成「MCP 工具」—— 依旧不露原始英文名。 */
+const TOOL_LABELS_CN = _agentCfg.toolLabels || {};
+// 兜底用中文占位而不是回退原名 —— 未登记的工具也不许把内部函数名露给用户。
+function toolLabelCN(name) {
+  if (TOOL_LABELS_CN[name]) return TOOL_LABELS_CN[name];
+  if (typeof name === 'string' && name.startsWith('mcp_')) {
+    // 归属靠 manager 的 toolIndex 精确查（mcp_echo 这种名字里没有 serverId 分隔符，
+    // 靠字符串猜前缀是不可靠的 —— 那次就猜错了）
+    const serverId = _mcp.ownerOf(name);
+    if (serverId) {
+      const def = _mcp.getServerDef(serverId);
+      const map = (def && def.toolLabels) || {};
+      // toolIndex 里存了「原始工具名」，用它去 yaml 的映射表里精确匹配
+      const entry = _mcp._state.toolIndex.get(name);
+      if (entry && entry.toolName && map[entry.toolName]) return map[entry.toolName];
+      // server 名总比"工具调用"具体
+      if (def && (def.name || def.id)) return 'MCP · ' + (def.name || def.id);
     }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'verify_ui',
-      description: '【修复自验证·必用】量当前界面的真实布局，判断改动到底有没有生效，并返回结论 pass/warn/fail。能查出：元素被容器或窗口边缘裁掉、内容被 overflow:hidden 藏住、元素跑出可视区域、控件被别的元素盖住点不到、尺寸塌陷。改完界面代码后必须调用它自证，不要只说"应该修好了"。',
-      parameters: {
-        type: 'object',
-        properties: {
-          selectors: { type: 'array', items: { type: 'string' }, description: '只验证这些 CSS 选择器（含子树），如 ["#btn-clear-chat"]；留空则扫描整页' },
-          checks: { type: 'array', items: { type: 'string' }, description: '要跑的检查项，默认 ["clipped","overflow-hidden","out-of-viewport"]，可加 "occluded"(控件被遮挡)、"zero-size"(尺寸塌陷)' },
-          which: { type: 'string', description: '验证哪个窗口，默认 main' },
-          screenshot: { type: 'boolean', description: '是否同时截图留证，默认 true', default: true },
-          analyze: { type: 'boolean', description: '是否再让视觉模型看图复核（需要配置视觉模型），默认 true', default: true },
-          expect: { type: 'string', description: '本次改动期望达到的效果，交给视觉模型对照判断，如"清空按钮完整可见，不再被右边缘裁掉"' }
-        }
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'analyze_screenshot',
-      description: '让视觉模型看一张截图并回答具体问题。用于"量不出来只能靠看"的问题：错位、颜色不对、图标丢失、被遮挡、排版混乱、文字被截断。需要提供商支持视觉模型（如 qwen-vl-max / gpt-4o / glm-4v）。',
-      parameters: {
-        type: 'object',
-        properties: {
-          question: { type: 'string', description: '要模型重点判断什么，越具体越好，如"清空按钮是否完整可见、有没有被右边缘切掉"' },
-          image_path: { type: 'string', description: '图片绝对路径；不传则用最近一次截图' },
-          provider_id: { type: 'string', description: '用哪个提供商（可选，默认跟随当前激活模型）' },
-          model: { type: 'string', description: '视觉模型名（可选，默认按提供商推断）' }
-        },
-        required: ['question']
-      }
+    return 'MCP 工具';
+  }
+  return '工具';
+}
+
+// 模型点名了工具、但被权限拦下时给用户的说明：说清「想做什么 / 为什么没做 / 去哪放开」。
+// 以前这种情况会退化成空回答，或一句"请在设置中开启思考模式"——两者都和真实原因无关。
+function buildBlockedToolHint(name, reason) {
+  const label = toolLabelCN(name);
+  // 脱敏：只说中文工具名，不夹带 '（' + name + '）' 这类内部函数名
+  if (reason === 'conversation') {
+    return '我需要调用「' + label + '」来完成这个操作，但当前是「会话模式」，该工具被限制。'
+      + '请切换到「工作模式」（打开工具开关）后重试。';
+  }
+  return '我需要调用「' + label + '」来完成这个操作，但它不在当前角色的可用工具范围内。'
+    + '请在「角色设置 → 可用工具」里勾选它，或切换到默认角色后重试。';
+}
+
+/**
+ * 从模型思考末尾提炼一句「下一步要做什么」的自然语言说明（工具执行前补发给用户看）。
+ * 思考模式下模型常把「先定位…/再查看…」写进 reasoning、正文留空；直接执行工具时
+ * 用户只能看到折叠的「思考结束」+工具卡片，看不到理由。这里从末尾取一段像「人话」的
+ * 叙述，过滤掉工具名/参数/JSON/纯符号等机器痕迹，并把内部工具英文名换成中文。
+ * @param {string} reasoning 本轮思考文本
+ * @param {string[]} [toolNames] 可用工具英文名，用于替换成中文展示名
+ * @returns {string} 提炼出的一句话（无则空串）
+ */
+function extractNextStepNotice(reasoning, toolNames) {
+  if (!reasoning) return '';
+  let text = String(reasoning);
+  if (Array.isArray(toolNames)) {
+    for (const n of toolNames) {
+      try {
+        const cn = toolLabelCN(n);
+        if (cn && cn !== n) text = text.split(n).join(cn);
+      } catch (e) { /* 单个替换失败不影响整体 */ }
     }
   }
-];
+  const lines = text.split(/\r?\n+/).map(s => s.trim()).filter(Boolean);
+  const badRe = /^(run_shell|write_file|read_file|web_search|web_fetch|file_search|directory_list|tool_calls|arguments|命令|参数|调用|正在执行)[：: ]/i;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i];
+    if (l.length < 6 || l.length > 150) continue;
+    if (/^[\[{("']/.test(l) || /^[0-9]{1,3}[.、.)]/.test(l)) continue;
+    if (badRe.test(l)) continue;
+    return l.replace(/^[*\-\s>]+/, '').replace(/[。；;,.]+$/, '').trim();
+  }
+  return '';
+}
 
 // Agent 系统提示词
 
 // ==================== 多角色智能体管理 ====================
 // 预设角色模板：每个角色有独立的系统提示词、工具权限、温度等配置
-const PRESET_AGENT_ROLES = [
-  {
-    id: 'general',
-    name: '通用助手',
-    nameEn: 'General Assistant',
-    emoji: '🤖',
-    description: '全能型助手，可处理各类任务，支持所有工具',
-    systemPrompt: null, // null 表示使用默认 AGENT_SYSTEM_PROMPT
-    tools: ['run_shell', 'read_file', 'write_file', 'get_system_info', 'pet_action', 'web_search', 'web_fetch', 'http_request', 'file_search', 'directory_list', 'copy_file', 'move_file', 'create_directory', 'download_file', 'get_current_time', 'calculator', 'check_url', 'open_url', 'memory_save', 'memory_search', 'memory_list', 'memory_delete', 'todo_write', 'todo_update', 'todo_read', 'capture_window', 'verify_ui', 'analyze_screenshot'],
-    temperature: 0.7,
-    maxIterations: 8,
-    allowDangerous: false,
-    isPreset: true
-  },
-  {
-    id: 'coder',
-    name: '程序员',
-    nameEn: 'Programmer',
-    emoji: '💻',
-    description: '专注代码编写、调试、项目开发，擅长读写文件和运行命令',
-    systemPrompt: `你是浮灵饰界的程序员智能体灵汐，专精软件开发和代码工作。
-## 核心能力
-- 编写、调试、重构代码（支持 Python/JS/HTML/CSS/Shell 等）
-- 读写项目文件，运行构建和测试命令
-- 分析报错日志，定位并修复 bug
-- 生成可直接运行的完整脚本和项目
-
-## 工作规范（必须遵守）
-1. **任务拆解**：接到需求后先拆解为可执行的子任务，按顺序执行
-2. **先读后写**：修改文件前必须先用 read_file 读取现有内容
-3. **结果校验**：写完代码后用 run_shell 运行验证，确认无语法错误
-4. **边界判断**：不确定的依赖或环境先查询，不编造 API 和函数名
-5. **终止判定**：代码可运行且满足需求后停止，不做无关修改
-
-## 输出要求
-- 代码完整可运行，不省略关键部分
-- 说明文件路径和运行方式
-- 报错时给出具体原因和修复方案`,
-    tools: ['run_shell', 'read_file', 'write_file', 'get_system_info', 'web_search', 'web_fetch', 'http_request', 'file_search', 'directory_list', 'copy_file', 'move_file', 'create_directory', 'download_file', 'get_current_time', 'calculator', 'check_url', 'memory_save', 'memory_search', 'memory_list', 'memory_delete', 'todo_write', 'todo_update', 'todo_read', 'capture_window', 'verify_ui', 'analyze_screenshot'],
-    temperature: 0.3,
-    maxIterations: 10,
-    allowDangerous: false,
-    isPreset: true
-  },
-  {
-    id: 'researcher',
-    name: '研究员',
-    nameEn: 'Researcher',
-    emoji: '🔬',
-    description: '专注信息分析、资料整理、深度调研，擅长读取和分析文件',
-    systemPrompt: `你是浮灵饰界的研究员智能体灵汐，专精信息分析和深度调研。
-## 核心能力
-- 读取和分析本地文件、日志、数据
-- 整理资料，提取关键信息
-- 对比分析多份文档，生成结构化报告
-- 系统调研某个主题，给出全面结论
-
-## 工作规范（必须遵守）
-1. **任务拆解**：将调研需求拆解为信息收集→分析→总结的步骤
-2. **事实优先**：所有结论必须基于 read_file 读取的真实内容，不编造
-3. **来源标注**：引用文件内容时标注来源文件
-4. **缺失识别**：信息不足时明确说明缺失了什么，不猜测
-5. **终止判定**：信息充分且结论清晰后停止
-
-## 输出要求
-- 结构化输出，分点清晰
-- 区分"已查证事实"和"分析推断"
-- 长报告先给摘要，再给详情`,
-    tools: ['read_file', 'get_system_info', 'write_file', 'web_search', 'web_fetch', 'http_request', 'file_search', 'directory_list', 'download_file', 'get_current_time', 'calculator', 'check_url', 'memory_save', 'memory_search', 'memory_list', 'memory_delete', 'todo_write', 'todo_update', 'todo_read', 'capture_window', 'verify_ui', 'analyze_screenshot'],
-    temperature: 0.5,
-    maxIterations: 8,
-    allowDangerous: false,
-    isPreset: true
-  },
-  {
-    id: 'writer',
-    name: '文案写手',
-    nameEn: 'Writer',
-    emoji: '✍️',
-    description: '专注创意写作、文案创作、内容生成，擅长写文件保存作品',
-    systemPrompt: `你是浮灵饰界的文案写手智能体灵汐，专精创意写作和内容创作。
-## 核心能力
-- 撰写文章、故事、文案、脚本
-- 生成营销文案、社交媒体内容
-- 写作后用 write_file 保存为文件
-- 根据反馈修改和润色
-
-## 工作规范（必须遵守）
-1. **任务拆解**：先确定主题→大纲→正文→润色的步骤
-2. **用户意图**：准确理解用户想要的风格、长度、用途
-3. **结果校验**：写完后检查是否满足所有要求
-4. **保存成果**：较长的作品主动用 write_file 保存到桌面或指定路径
-5. **终止判定**：作品完成且符合要求后停止
-
-## 输出要求
-- 内容有创意，不套模板
-- 格式规范，排版清晰
-- 主动建议保存路径`,
-    tools: ['write_file', 'read_file', 'web_search', 'web_fetch', 'file_search', 'directory_list', 'get_current_time', 'memory_save', 'memory_search', 'memory_list', 'memory_delete', 'todo_write', 'todo_update', 'todo_read'],
-    temperature: 0.8,
-    maxIterations: 6,
-    allowDangerous: false,
-    isPreset: true
-  },
-  {
-    id: 'ops',
-    name: '运维工程师',
-    nameEn: 'DevOps Engineer',
-    emoji: '⚙️',
-    description: '专注系统运维、环境配置、命令执行，擅长系统管理',
-    systemPrompt: `你是浮灵饰界的运维工程师智能体灵汐，专精系统管理和运维操作。
-## 核心能力
-- 执行系统命令，管理进程和服务
-- 配置环境变量、安装依赖
-- 查看系统状态、日志、资源使用
-- 排查系统问题，给出运维方案
-
-## 工作规范（必须遵守）
-1. **任务拆解**：运维操作先确认环境→备份→执行→验证
-2. **安全第一**：禁止执行删除系统文件、格式化、修改注册表等危险操作
-3. **先查后做**：操作前先用 get_system_info 和 run_shell 确认环境
-4. **结果校验**：执行命令后检查输出，确认操作成功
-5. **边界判断**：不确定的命令先解释风险，不盲目执行
-6. **终止判定**：运维目标达成后停止
-
-## 输出要求
-- 命令附带说明和预期结果
-- 报错时给出排查思路
-- 重要操作提醒用户确认`,
-    tools: ['run_shell', 'read_file', 'get_system_info', 'web_search', 'web_fetch', 'http_request', 'file_search', 'directory_list', 'copy_file', 'move_file', 'create_directory', 'download_file', 'get_current_time', 'check_url', 'open_url', 'memory_save', 'memory_search', 'memory_list', 'memory_delete', 'todo_write', 'todo_update', 'todo_read', 'capture_window', 'verify_ui', 'analyze_screenshot'],
-    temperature: 0.2,
-    maxIterations: 8,
-    allowDangerous: false,
-    isPreset: true
-  },
-  {
-    id: 'analyst',
-    name: '数据分析师',
-    nameEn: 'Data Analyst',
-    emoji: '📊',
-    description: '专注数据处理、统计分析、报表生成，擅长处理数据文件',
-    systemPrompt: `你是浮灵饰界的数据分析师智能体灵汐，专精数据处理和统计分析。
-## 核心能力
-- 读取 CSV/JSON/日志等数据文件
-- 数据清洗、统计、聚合分析
-- 生成分析报告和可视化建议
-- 编写数据处理脚本
-
-## 工作规范（必须遵守）
-1. **任务拆解**：分析任务按 读取数据→清洗→统计→结论 步骤执行
-2. **数据真实**：所有数字必须来自 read_file 的真实数据，不编造
-3. **结果校验**：计算结果用脚本验证，不手算
-4. **缺失识别**：数据不足时说明缺什么，不臆造
-5. **终止判定**：分析完成且结论有数据支撑后停止
-
-## 输出要求
-- 用表格展示关键数据
-- 结论附带数据依据
-- 主动建议保存分析结果`,
-    tools: ['read_file', 'run_shell', 'write_file', 'get_system_info', 'web_search', 'web_fetch', 'file_search', 'directory_list', 'calculator', 'get_current_time', 'download_file', 'memory_save', 'memory_search', 'memory_list', 'memory_delete', 'todo_write', 'todo_update', 'todo_read', 'capture_window', 'verify_ui', 'analyze_screenshot'],
-    temperature: 0.3,
-    maxIterations: 8,
-    allowDangerous: false,
-    isPreset: true
-  }
-];
+const PRESET_AGENT_ROLES = _agentCfg.presetRoles || [];
 
 // 自定义角色存储路径
 function getCustomRolesPath() {
@@ -1819,135 +1759,218 @@ function deleteAgentRole(roleId) {
 }
 
 
-const AGENT_SYSTEM_PROMPT = `你是浮灵饰界的智能助手灵汐，具备思考和工具调用能力。你不是普通聊天机器人，必须主动使用工具完成任务。
-
-## 核心原则
-- 用户要求写代码/脚本/文件时，**必须调用 write_file 写入文件**，不要只在对话中展示代码
-- 用户要求运行/执行时，**必须调用 run_shell 执行命令**，并返回执行结果
-- 需要查看文件内容时，**必须调用 read_file**
-- 完成任务后，用简洁语言总结做了什么
-
-## 工作方式
-1. 先思考（reasoning），分析用户需求并规划步骤
-2. 需要外部信息或操作时，**必须实际输出 tool_calls 调用工具**，绝对不能只在思考中描述"我要调用xx工具"而不实际输出
-3. **重要：思考（reasoning）只是你的内部规划过程，不是工具调用本身。如果你在思考中决定要调用某个工具，就必须在回答中实际输出该工具的 tool_calls 结构化数据，否则工具不会被执行。**
-4. 根据工具返回结果继续思考，直到任务完成
-- **多步任务必须逐步执行**：执行完一个工具后，必须查看工具返回结果，判断是否需要继续调用其他工具。不要执行一步就直接给最终答案，除非任务确实只需要一步。
-- **工具结果校验**：每次工具执行后，检查返回的 success 字段和具体内容。如果失败，分析原因并重试或换方案；如果成功但信息不足，继续调用其他工具补充。
-- **只有确认任务全部完成后才输出最终答案**：最终答案前不要再输出 tool_calls；如果还有未完成的步骤，继续调用工具。
-5. 最终回答要简洁、实用、面向用户
-
-## 工具使用规则
-- run_shell：执行命令获取系统信息、运行脚本、检查环境
-- read_file：读取文件内容
-- write_file：写入文件（生成代码、配置、脚本等）
-- get_system_info：获取系统概况
-- pet_action：让宠物做动作
-- web_search：**网络搜索**，查询最新资讯、技术文档、百科知识等外部信息。当用户问题需要外部信息或最新数据时，**必须先搜索**，不要凭记忆回答
-- web_fetch：**抓取网页内容**，读取具体网页、文档、博客文章的详细内容。搜索到相关链接后，用此工具获取详细内容
-- http_request：发送 HTTP 请求，调用 API、测试接口
-- file_search：在目录中搜索文件，按名称或扩展名过滤
-- directory_list：列出目录下的文件和子目录
-- copy_file：复制文件或目录
-- move_file：移动或重命名文件/目录
-- create_directory：创建目录
-- download_file：从 URL 下载文件到本地
-- get_current_time：获取当前日期和时间
-- calculator：执行数学计算
-- check_url：检查 URL 是否可访问
-- open_url：在默认浏览器中打开 URL
-- memory_save / memory_search / memory_list / memory_delete：**长期记忆**的写入、检索、列举与删除
-- todo_write / todo_update / todo_read：**待办清单**的整理、单条推进与读取
-- capture_window：截取「需要验证的程序」窗口画面（默认本应用）
-- verify_ui：**界面自验证**，量真实布局并返回 pass/warn/fail
-- analyze_screenshot：让视觉模型看截图并回答具体问题
-
-## 需求整理与待办规范（重要）
-**先把需求变成可确认的清单，再动手。**
-1. **多步骤 / 模糊需求**：动手前先调 todo_write，把用户那句话拆成 3~7 条待办；这就是"需求确认"——
-   用户能一眼看出你理解成了什么。理解有歧义时，**在开头用一句话写明你的理解**再继续，不要默默假设。
-2. **每条待办必须精确、可验证**：
-   - text 用动词开头写"做什么"（"改 .panel-actions 的收缩规则"，不写"优化布局"）
-   - done_when 写**完成判据**：怎么算做完了，必须可观测、可复核（"900px 窗口下 4 个按钮都完整可见"）
-   - 禁止出现"优化一下""处理相关问题""完善功能"这类无法验证的说法
-3. **过程要如实推进**：同一时刻只把一条标成 in_progress；做完立刻 todo_update 成 completed，
-   并在 note 里写结果或证据（命令输出、截图路径、验证结论）。不要攒到最后一次性全标完成。
-4. **需求变了**：用户在过程中改需求 → 用 todo_write 整表替换（可保留已完成条目的 id）。
-5. **交答案之前必须让清单落地**：只要本轮建过或改过清单，给最终答复之前必须先用 todo_update
-   把每条标成 completed（note 写证据）或写明为何未完成。**应用会在收尾时检查这件事**，
-   清单没落地会被退回重做一轮 —— 所以别等提醒，做一条就标一条。
-6. **汇报**：逐条对应待办说明完成情况；不要把没做的偷偷标成完成。
-
-## 长期记忆使用规范
-- **该记**：用户偏好与习惯（"不要每次都问我""回复要简短"）、项目约定与硬规则、环境限制（路径/端口/依赖）、踩过的坑与修复结论
-- **不该记**：闲聊、一次性任务、能直接从代码或文件里读到的信息、临时状态
-- 判断标准：**这条信息下次对话还有用吗？** 有用就 memory_save，否则不要存
-- 一条记忆只讲一件事，写得具体（"Electron 版设置页是 column-count:2 双列瀑布流，隐藏控件会让整列跳位"），不要写空泛的大道理
-- 用户说"记住…"时立即 memory_save；用户说"忘掉…"时先 memory_search 拿到 id 再 memory_delete
-- 用户纠正了你的记忆时，用 memory_save 传同一个 id 覆盖，不要新增矛盾条目
-
-## 修复自验证规范（重要）
-改了代码/界面/配置后，**不能只说"已修复"，必须给出验证证据**：
-1. 界面类问题（布局错乱、按钮被遮挡/裁切、元素不显示、样式没生效）→ 必须调用 **verify_ui** 自证：
-   - 只验证刚改的部分时传 selectors（如 ["#btn-clear-chat"]），整页回归时留空
-   - 看它返回的 verdict：pass 才算修好；warn/fail 必须继续改，并把 issues 里的 element/detail 当作线索
-   - 需要"看"才能判断的（颜色、图标、错位）→ 再调 analyze_screenshot 并给出具体的 expect
-2. 逻辑类问题（命令、脚本、接口）→ 用 run_shell / read_file 复现并确认输出符合预期
-3. 涉及外部程序时，用 capture_window（传 title）抓对方窗口留证
-4. 最终回答要明确写出：**改了什么 → 怎么验的 → 验证结论（通过/未通过 + 证据路径）**。没验证成功要如实说没通过，不许含糊
-
-
-## 搜索与信息获取流程
-1. 用户问题需要外部信息时，**先调用 web_search 搜索**
-2. 从搜索结果中选择最相关的链接
-3. 调用 web_fetch 抓取该网页的详细内容
-4. 基于抓取的内容整理回答，**必须注明信息来源**
-5. 如果搜索失败，尝试更换关键词或使用其他工具
-
-## 注意
-- 不要重复调用相同参数的工具
-- 工具调用失败时**必须分析原因并立即尝试替代方案**，不能只回复文本说明失败
-- write_file 写入失败时，检查路径权限，尝试更换到用户目录（如 C:\\Users\\<用户名>\\Desktop）
-- run_shell 执行失败时，检查命令语法，尝试其他命令或参数
-- 最终回答不要暴露工具调用细节，除非用户要求
-- 用户上传的文件内容会在消息中给出，可以直接分析
-- Windows 系统桌面路径优先使用 C:\\Users\\<用户名>\\Desktop，不要用 C:\\Users\\Public\\Desktop（需要管理员权限）`;
+const AGENT_SYSTEM_PROMPT = _agentCfg.corePrompt || '';
 
 // 供渲染进程动态渲染"启用工具"/"角色可用工具"列表，避免前端硬编码导致新工具永远不生效
 function getAgentTools() {
   // 只返回有风险的工具给前端设置页面（无风险工具默认启用，不需要用户配置）
-  return AGENT_TOOLS
+  const risky = AGENT_TOOLS
     .filter(t => RISKY_TOOLS.has(t.function.name))
     .map(t => ({
+      name: t.function.name,
+      description: t.function.description || '',
+      parameters: t.function.parameters || null
+    }));
+  // MCP 工具**全部**返回：它们一律要用户在设置页显式勾选（外部进程默认不授权），
+  // enabled 由 manager 的 toolIndex 精确给出，不靠字符串猜归属。
+  const mcpEnabled = new Set(_mcp.getEnabled());
+  const mcp = _mcpToolCache.tools.map(t => ({
     name: t.function.name,
     description: t.function.description || '',
-    parameters: t.function.parameters || null
+    parameters: t.function.parameters || null,
+    isMcp: true,
+    serverId: _mcp.ownerOf(t.function.name) || '',
+    enabled: mcpEnabled.has(_mcp.ownerOf(t.function.name))
   }));
+  return risky.concat(mcp);
 }
 
-// 粗略 token 估算（CJK 1 字符 ≈ 1 token，其他 4 字符 ≈ 1 token）
+// 粗略 token 估算（CJK 1 字符 ≈ 1 token，其他字符按 transform.yaml 的 nonCjkRatio 折算）
+// 系数外置到 transform.yaml：主进程与渲染层必须用同一个值，否则前端容量条会和后端真实
+// prompt_tokens 打架（历史上就是因为两边各写一份 0.26，改一边就漂了）。
 function approxTokens(str) {
   const s = typeof str === 'string' ? str : JSON.stringify(str || '');
   if (!s) return 0;
-  const cjk = (s.match(/[\u2E80-\u9FFF\uF900-\uFAFF\uAC00-\uD7AF\uFF00-\uFFEF]/g) || []).length;
-  return Math.ceil(cjk + (s.length - cjk) * 0.26);
+  const te = (_agentCfg.transform && _agentCfg.transform.tokenEstimate) || {};
+  const ratio = typeof te.nonCjkRatio === 'number' ? te.nonCjkRatio : 0.26;
+  let cjk = 0;
+  try {
+    const re = new RegExp(te.cjkPattern || '[\\u2E80-\\u9FFF\\uF900-\\uFAFF\\uAC00-\\uD7AF\\uFF00-\\uFFEF]', 'g');
+    cjk = (s.match(re) || []).length;
+  } catch (e) {
+    cjk = (s.match(/[\u2E80-\u9FFF\uF900-\uFAFF\uAC00-\uD7AF\uFF00-\uFFEF]/g) || []).length;
+  }
+  return Math.ceil(cjk + (s.length - cjk) * ratio);
 }
 
 // 供渲染进程估算"上下文占用"：工具定义 + 系统提示词的真实开销（这部分前端拿不到原文）
+// transform 一并下发：渲染层的截断预算 / 上下文水位常量全部改从这份配置读，
+// 避免同一个数字在三个文件里各写一份。
 function getContextMeta() {
+  const t = _agentCfg.transform || {};
+  const all = AGENT_TOOLS.concat(_mcpToolCache.tools);
   return {
-    toolCount: AGENT_TOOLS.length,
-    toolsTokens: approxTokens(JSON.stringify(AGENT_TOOLS)),
+    toolCount: all.length,
+    builtinToolCount: AGENT_TOOLS.length,
+    mcpToolCount: _mcpToolCache.tools.length,
+    toolsTokens: approxTokens(JSON.stringify(all)),
     systemPromptTokens: approxTokens(AGENT_SYSTEM_PROMPT || ''),
-    toolNames: AGENT_TOOLS.map(t => t.function.name)
+    toolNames: all.map(t2 => t2.function.name),
+    transform: {
+      tokenEstimate: t.tokenEstimate,
+      budget: t.budget,
+      context: t.context,
+      agentOverhead: t.agentOverhead
+    }
   };
 }
 
 
+/**
+ * 判断模型在思考里提到某工具的那句话**是不是真意图**，返回意图强度分（0 = 不是意图）。
+ *
+ * 背景：模型做排除推理时会提到一堆它**不打算调用**的工具，例如
+ *   "要确保没有其他工具被错误调用，比如 launch_in_clone 或 launch_project"
+ *   "如果用户之后有启动程序的需求，应该使用 launch_in_clone 命令"
+ * 这些句子里工具名照样出现，但按名字匹配就会误调（launch_in_clone 带 required，
+ * 误调会真的去启动程序）。所以必须看**这个词周围那句话的语气**。
+ *
+ * 规则（就近取工具名前后各 60 字作为句子窗口）：
+ *   - 命中排除/假设语气 → 直接判 0（"确保没有其他工具"、"比如"、"如果"、"如果之后"、
+ *     "不需要"、"不必"、"而不是"、"不是"、"避免"、"不要"、"无需"、"暂时不"、"非"）
+ *   - 命中强意图动词 → 高分（"我需要调用"、"只需要调用"、"直接调用"、"应该调用"、
+ *     "要调用"、"让我调用"、"因此调用"、"于是调用"、"决定调用"、"我将调用"）
+ *   - 命中普通意图动词 → 中低分（"调用"、"使用"、"执行"、"启动"、"打开"）
+ *   - 两者都没有（只是列举/提及）→ 0，不采纳
+ *
+ * 多个工具名出现在同一句（"比如 A 或 B"）时整句都算排除语境。
+ */
+function intentScoreOfToolMention(reasoning, toolName) {
+  if (!reasoning || !toolName) return 0;
+  // 可能被模型写错后缀（如 launch_in_clone 被写成 launch_in_done），用共同前缀兜底匹配
+  const idxs = [];
+  let from = 0;
+  while (true) {
+    const i = reasoning.indexOf(toolName, from);
+    if (i < 0) break;
+    idxs.push(i);
+    from = i + toolName.length;
+  }
+  if (!idxs.length) {
+    // 退化匹配：取工具名的前 12 个字符（如 launch_in_clon），容忍模型拼写尾缀错误
+    const stem = toolName.slice(0, Math.min(12, toolName.length));
+    if (stem.length < 6) return 0;
+    let f2 = 0;
+    while (true) {
+      const i = reasoning.indexOf(stem, f2);
+      if (i < 0) break;
+      idxs.push(i);
+      f2 = i + stem.length;
+    }
+    if (!idxs.length) return 0;
+  }
+
+  let best = 0;
+  for (const i of idxs) {
+    // ---- 排除语气：紧贴工具名的子句 ----
+    // 取工具名前最后一个句读之后的内容。必须回溯到**所在子句的开头**再判假设语气：
+    //   "如果用户之后需要启动程序，应该使用 ensure_clone_desktop 命令"
+    // 逗号前是"如果…"，只看逗号后就漏判了。所以拿到子句后，再向前扩到最近的强分句符
+    // （。！？换行），把"如果…"一起纳入判断。
+    const rawPre = reasoning.slice(Math.max(0, i - 60), i);
+    const sentenceStart = Math.max(
+      rawPre.lastIndexOf('。'), rawPre.lastIndexOf('！'), rawPre.lastIndexOf('？'),
+      rawPre.lastIndexOf('\n'), rawPre.lastIndexOf('!'), rawPre.lastIndexOf('?')
+    );
+    const clause = sentenceStart >= 0 ? rawPre.slice(sentenceStart + 1) : rawPre;
+    // 子句内再按最后一个逗号细分（"我需要调用"这部分权重最高）
+    const cut = Math.max(clause.lastIndexOf('，'), clause.lastIndexOf('；'), clause.lastIndexOf(','), clause.lastIndexOf(';'));
+    const pre = cut >= 0 ? clause.slice(cut + 1) : clause;
+    const post = reasoning.slice(i + toolName.length, Math.min(reasoning.length, i + toolName.length + 30));
+
+    // 子句级排除 → 这处提及不是意图
+    if (/(确保|避免|防止|不要|不用|不需要|不必|无需|而不是|而非|不是|暂不|暂时不|比如|例如|诸如|其他工具|别的工具|其他命令)/.test(clause)) {
+      continue;
+    }
+    // 假设语气（"如果…，应该用 X"）与真意图（"如果…，我需要调用 X"）的区别在于**逗号后的动词**：
+    //   条件从句只是背景，真正决定意图的是主句动词。所以先按逗号切出主句再判。
+    //   - 主句是"我需要调用/只需要调用/直接调用…" → 真意图（条件句只是前置背景）
+    //   - 主句是"应该使用/可以用/或许用…" 且整句被"如果"引导 → 假设推演，判 0
+    const headHasIf = /^\s*(如果|假如|倘若|若是)/.test(clause);
+    if (headHasIf) {
+      // "如果…" 开头：只有当逗号后主句是明确决心动词时才认，否则是假设
+      const afterComma = pre;
+      const decisive = /(我需要|我需要调用|需要调用|需要使用|只需要|只需|直接调用|我要|让我|决定)/.test(afterComma);
+      const speculative = /(应该|应当|可以|或许|可能|试试|不妨)/.test(afterComma);
+      if (!decisive || speculative) continue;
+    }
+    // 工具名后面紧跟"如果/比如/或 + 另一个工具名" → 列举或假设，不是意图
+    if (/^\s*(如果|假如|倘若|若是|比如|例如|诸如)/.test(post)) continue;
+    if (/^\s*(或|和|与|、|以及)\s*[a-z_]{4,}/i.test(post)) continue;
+
+    // 意图动词：紧贴工具名的动词权重最高（"我需要调用X"），跨句的次之
+    const preStrong = /(我需要调用|我需要使用|需要调用|需要使用|只需要调用|只需调用|直接调用|直接使用|应该调用|应当调用|要调用|我要调用|让我调用|决定调用|我将调用|我会调用|因此调用|于是调用|那就调用|便调用)\s*$/.test(pre);
+    const preNormal = /(调用|使用|执行|启动|打开|拉起|运行)\s*$/.test(pre);
+    const win = pre + toolName + post;
+    const winStrong = /(我需要调用|我需要使用|只需要调用|只需调用|直接调用|应该调用|应当调用|我要调用|让我调用|决定调用|我将调用|我会调用|因此调用|于是调用|那就调用|便调用)/.test(win);
+    const winNormal = /(调用|使用|执行|启动|打开|拉起|运行)/.test(win);
+
+    let score = 0;
+    if (preStrong) score = 100;
+    else if (preNormal) score = 70;
+    else if (winStrong) score = 60;
+    else if (winNormal) score = 40;
+    if (score === 0) continue;
+    if (score > best) best = score;
+  }
+  return best;
+}
+
 // 从思考内容中提取工具调用意图（qwen3小模型常只在思考里描述不输出tool_calls，此函数手动提取并执行）
-function extractToolCallFromReasoning(reasoning, userMessage) {
+//
+// 四级策略，从可靠到兜底：
+//   ① 模型在思考里**点名了某个工具**（"直接调用 ensure_clone_desktop 即可"）——信号最强。
+//      仅当该工具**没有必填参数**时才自动执行：有必填参数的工具缺参数必然执行失败，
+//      宁可退回重试让模型自己把参数补全，也不要瞎跑一次错的。
+//   ② web_search：从思考/提问里提取搜索关键词。
+//   ③ web_fetch：从思考/提问里提取 URL。
+//   ④ 其余复杂工具（write_file / run_shell 等）一律不自动提取，避免误执行。
+function extractToolCallFromReasoning(reasoning, userMessage, toolDefs) {
   if (!reasoning) return null;
   const text = reasoning + ' ' + (userMessage || '');
+
+  // ① 模型直接点名工具 → 无必填参数则直接执行（截图里的 ensure_clone_desktop 就走这里）
+  //
+  // ⚠️ 三条血泪教训，缺一个都会选错工具：
+  //   1) 不能按 AGENT_TOOLS 定义顺序取第一个 —— 会选中模型最先提到、往往正是它要排除的那个。
+  //   2) 不能按"最后出现的位置"取 —— 模型常在结尾写假设性排除句
+  //      （"如果用户之后有启动程序的需求，应该使用 launch_in_clone…"），
+  //      位置最靠后 ≠ 意图最强，会选中一句根本没打算执行的工具。
+  //   3) 不能只要名字出现就采纳 —— "要确保没有其他工具被错误调用，比如 launch_in_clone"
+  //      这种纯提及必须排除。
+  // 正确判据是**句子的意图强度**：模型说"我需要调用X / 只需要调用X / 直接调用X"才是真意图；
+  // "如果…应该用X / 不需要… / 确保没有其他工具被错误调用，比如X"是排除，一律不算。
+  const defs = Array.isArray(toolDefs) ? toolDefs : [];
+  const hits = [];
+  for (const def of defs) {
+    const name = def && def.function && def.function.name;
+    // 只在 reasoning 里匹配：用户消息里出现工具名不代表模型决定调用它
+    if (!name) continue;
+    const score = intentScoreOfToolMention(reasoning, name);
+    if (score <= 0) continue;
+    const required = def.function.parameters && def.function.parameters.required;
+    // 有必填参数的工具不在这里自动执行：缺参数必然失败（launch_in_clone 就属这类，
+    // 误调会真的去启动程序）。它们的恢复交给下面的关键词/URL 提取或方案B 重试。
+    if (Array.isArray(required) && required.length) continue;
+    hits.push({ name, score, pos: reasoning.lastIndexOf(name) });
+  }
+  if (hits.length) {
+    // 意图强度优先；强度相同再取更靠后出现的（更接近模型最终结论）
+    hits.sort((a, b) => (b.score - a.score) || (b.pos - a.pos));
+    console.log('[Agent] 从思考中识别到工具点名（无必填参数，直接执行）:', hits[0].name,
+      '候选:', hits.map(h => h.name + '(强度' + h.score + ')').join(', '));
+    return { name: hits[0].name, arguments: {} };
+  }
 
   // web_search：提取搜索关键词
   if (/web_search|搜索|查找|查询|检索|搜一下/i.test(text)) {
@@ -2096,6 +2119,30 @@ function memoryBrief(it) {
 
 // 最近一次截图路径：analyze_screenshot 不带 image_path 时复用
 let lastScreenshotPath = null;
+
+// 「当前被测程序」——launch_project 启动成功后记下来，让截图/验证默认指向「被测程序的窗口」
+// 而不是本应用自己的窗口（这是「验证外部项目却总截到自己页面」的根因：capture_window 默认 which=main）。
+// 结构：{ title, dir, at, url }；title 用 launcher 给的 windowTitleHint
+// （网页项目 = 页面 <title>，浏览器窗口标题里就含它，截图才锁得准）。
+let currentTestTarget = null;
+const TEST_TARGET_TTL = 30 * 60 * 1000; // 30 分钟内视为有效，避免陈旧目标误导
+
+/** launch_project 成功启动后登记被测程序。 */
+function setTestTarget(info) {
+  if (!info || !info.dir) return;
+  const title = info.title || info.windowTitleHint || info.name || '';
+  if (!title) return;
+  currentTestTarget = { title: String(title), dir: info.dir, at: Date.now(), url: info.url || null };
+}
+
+/** 取当前被测程序的窗口标题（同一 workdir、未过期才有效）；没有则 null → 走原默认。 */
+function resolveTestTargetTitle(workdir) {
+  const t = currentTestTarget;
+  if (!t || !t.title) return null;
+  if (Date.now() - t.at > TEST_TARGET_TTL) return null;
+  if (workdir && t.dir && path.resolve(t.dir) !== path.resolve(workdir)) return null; // 换项目了，别用旧目标
+  return t.title;
+}
 
 // 常见提供商的视觉模型推断。
 // ⚠️ 不能只匹配域名：很多人用的是中转 / 自建网关 / 反代，apiUrl 根本不是官方域名。
@@ -2264,7 +2311,131 @@ function safeWriteRequest(req, body, onFail) {
 
 // 执行工具
 // ctx: { conversationId } —— 待办清单按会话隔离，靠它定位
+// ===== 文档文本提取（read_file 扩展支持 PDF / docx）=====
+// PDF 文字提取：pdf-parse v2（内置 pdf.js）。懒加载——模块缺失/损坏时不影响其他功能。
+let _PDFParse = null;
+let _pdfParseTried = false;
+async function extractPdfText(filePath) {
+  try {
+    if (!_pdfParseTried) {
+      _pdfParseTried = true;
+      // pdf-parse v2：{ PDFParse } 具名导出；v1 的默认函数导出已废弃
+      _PDFParse = require('pdf-parse').PDFParse;
+    }
+  } catch (e) {
+    throw new Error('PDF 解析模块未安装（pdf-parse 缺失）');
+  }
+  if (!_PDFParse) throw new Error('PDF 解析模块不可用（pdf-parse 版本不兼容）');
+  const dataBuffer = fs.readFileSync(filePath);
+  const parser = new _PDFParse({ data: new Uint8Array(dataBuffer) });
+  try {
+    const result = await parser.getText();
+    return String(result.text || '').replace(/\n{3,}/g, '\n\n').trim();
+  } finally {
+    try { await parser.destroy(); } catch (e) {}
+  }
+}
+
+// docx：zip 包 → word/document.xml → 剥标签。用项目里已有的 extract-zip。
+// 段落 </w:p> 换行、<w:br/> 换行、<w:tab/> 制表；其余标签删除，XML 实体还原。
+async function extractDocxText(filePath) {
+  const extract = require('extract-zip');
+  const os = require('os');
+  const tmpDir = path.join(os.tmpdir(), 'ailobster_docx_' + Date.now());
+  try {
+    await extract(filePath, { dir: tmpDir });
+    const docXmlPath = path.join(tmpDir, 'word', 'document.xml');
+    if (!fs.existsSync(docXmlPath)) return null;
+    let xml = fs.readFileSync(docXmlPath, 'utf8');
+    // 段落与换行先转成标记符，避免剥标签时粘连
+    xml = xml.replace(/<\/w:p>/g, '\n').replace(/<w:br\s*\/>/g, '\n').replace(/<w:tab\s*\/>/g, '\t');
+    // 剥掉其余所有标签
+    let text = xml.replace(/<[^>]+>/g, '');
+    // XML 实体还原
+    text = text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+    return text.replace(/\n{3,}/g, '\n\n').trim();
+  } catch (e) {
+    return null;
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
+  }
+}
+
+/**
+ * 工具参数前置校验（文档 3.1「结构化工具定义 + 前置参数校验」落地）。
+ * 在真正执行工具之前，按 schema 检查 required / 类型，不合格直接返回结构化错误，
+ * 让模型重传参数——不要等 run_shell 炸了才回滚。
+ * 轻量实现：只查 required 是否齐全 + 简单类型匹配，不做完整 JSON Schema 校验（避免引依赖）。
+ */
+function validateToolArgs(name, args) {
+  const def = AGENT_TOOLS.find(t => t.function && t.function.name === name);
+  if (!def || !def.function || !def.function.parameters) return null; // 无 schema 不拦
+  const schema = def.function.parameters;
+  const required = Array.isArray(schema.required) ? schema.required : [];
+  const props = schema.properties || {};
+  const problems = [];
+  // args 兜底：模型有时把对象当字符串传
+  let a = args;
+  if (typeof a === 'string') {
+    try { a = JSON.parse(a); } catch (e) { a = {}; }
+  }
+  if (!a || typeof a !== 'object' || Array.isArray(a)) a = {};
+  // 1) required 必填
+  for (const key of required) {
+    const v = a[key];
+    if (v === undefined || v === null || v === '') {
+      problems.push('缺少必填参数：' + key);
+    }
+  }
+  // 2) 简单类型检查（properties 里声明了 type 的字段）
+  for (const [key, spec] of Object.entries(props)) {
+    const v = a[key];
+    if (v === undefined || v === null) continue; // 非 required 缺了不拦
+    const t = spec && spec.type;
+    let ok = true;
+    if (t === 'string') ok = typeof v === 'string';
+    else if (t === 'number' || t === 'integer') ok = typeof v === 'number' && !isNaN(v);
+    else if (t === 'boolean') ok = typeof v === 'boolean';
+    else if (t === 'object') ok = typeof v === 'object' && !Array.isArray(v);
+    else if (t === 'array') ok = Array.isArray(v);
+    if (!ok) problems.push('参数「' + key + '」类型错误：期望 ' + t + '，实际是 ' + (Array.isArray(v) ? 'array' : typeof v));
+  }
+  if (problems.length) {
+    return {
+      success: false,
+      error: '参数校验未通过：' + problems.join('；')
+        + '。请按工具 schema 修正参数后重新调用。当前收到的参数：'
+        + JSON.stringify(a).slice(0, 500)
+    };
+  }
+  return null;
+}
+
 async function executeTool(name, args, workdir, ctx) {
+  // MCP 工具优先分发：它们是外部进程的能力，和内置工具是两套东西，
+  // 放在 switch 之前拦掉，免得 case 列表越加越长。
+  // 注意：会话模式的硬阻断必须**先于**这里执行，否则外部工具就成了绕过通道。
+  if (ctx && ctx.allowedTools && ctx.allowedTools instanceof Set && !ctx.allowedTools.has(name)) {
+    console.warn('[Agent] 会话模式拦截非识别工具调用:', name);
+    return {
+      success: false,
+      error: '当前为「会话模式」，仅允许识别/解读类工具（看图分析 / 界面自验证 / 窗口截图），不允许使用「' + toolLabelCN(name) + '」。如需启动程序、操作电脑、读写文件、执行命令，请切换到「工作模式」。'
+    };
+  }
+  // 前置参数校验（内置工具）：required 缺/类型错直接返回结构化错误，不让模型把坏参数送进 switch。
+  // MCP 工具的 schema 在外部 server 手里，不在这里拦（它们自己会返结构化错误）。
+  if (typeof name === 'string' && !name.startsWith('mcp_')) {
+    const vErr = validateToolArgs(name, args);
+    if (vErr) {
+      console.log('[Agent] 参数校验未通过:', name, vErr.error);
+      return vErr;
+    }
+  }
+  if (typeof name === 'string' && name.startsWith('mcp_')) {
+    // MCP 工具调用走带重试策略的封装：网络抖动自动重试、崩溃自动重启
+    return _mcpRetry.callToolWithRetry(_mcp, name, args);
+  }
   const { exec, execSync } = require('child_process');
   const os = require('os');
   // 相对路径解析到项目工作目录；未选项目或已是绝对路径则原样返回
@@ -2274,15 +2445,51 @@ async function executeTool(name, args, workdir, ctx) {
     return path.isAbsolute(p) ? p : path.resolve(workdir, p);
   };
   try {
+    // 记忆按项目隔离：每次工具调用前校准记忆作用域（选项目→项目记忆，否则→全局）
+    MemoryStore.ensureScope(MemoryStore.scopePathForWorkdir(workdir));
     switch (name) {
       case 'run_shell': {
         const cmd = args.command;
-        const timeout = args.timeout || 15000;
+        // 默认超时 120 秒（docker build / npm install / pip install 等长任务；AI 可自行传更长 timeout）
+        const timeout = args.timeout || 120000;
         // 安全限制：禁止危险命令
         const dangerous = /^(del|rmdir|format|diskpart|shutdown.*\/s|reg delete)/i;
         if (dangerous.test(cmd.trim())) {
           return { success: false, error: '命令被安全策略拦截（可能危险）' };
         }
+        // 【桌面分身】分身正在运行时，所有命令都在分会话里执行，不在本机跑
+        try {
+          const DesktopSession = require('../desktopSession');
+          const st = DesktopSession.status();
+          if (st.state === 'running') {
+            const os = require('os');
+            const outFile = path.join(os.tmpdir(), 'mcp_cmd_out_' + Date.now() + '.txt');
+            // 在分会话里用 cmd.exe 执行命令，stdout+stderr 重定向到临时文件
+            const wrappedCmd = 'cmd.exe /c "' + cmd.replace(/"/g, '\\"') + ' > "' + outFile + '" 2>&1"';
+            const lr = await DesktopSession.launchInSession('cmd.exe', '/c ' + wrappedCmd, workdir || '');
+            if (!lr.success) {
+              return { success: false, error: '【桌面分身】命令在分会话执行失败: ' + (lr.error || '未知') };
+            }
+            // 轮询输出文件直到命令结束（分身里 cmd.exe 退出后文件写完）
+            const deadline = Date.now() + timeout;
+            let lastSize = -1, stableCount = 0;
+            while (Date.now() < deadline) {
+              await new Promise(r => setTimeout(r, 300));
+              try {
+                if (!fs.existsSync(outFile)) continue;
+                const stat = fs.statSync(outFile);
+                if (stat.size === lastSize) { stableCount++; if (stableCount >= 3) break; }
+                else { lastSize = stat.size; stableCount = 0; }
+              } catch (e) { /* 忽略 */ }
+            }
+            let output = '';
+            try { output = fs.readFileSync(outFile, 'utf8').slice(0, 5000); } catch (e) {}
+            try { fs.unlinkSync(outFile); } catch (e) {}
+            return { success: true, output: output || '(命令已在分身里执行，无输出)', ranInClone: true };
+          }
+        } catch (e) { /* 分身不可用就回落本机 */ }
+        const trimmed = cmd.trim();
+        // 命令行操作一律本机执行（不自动拉分身）
         // start 命令启动外部程序，不等待退出
         if (/^start\s/i.test(cmd.trim())) {
           try {
@@ -2303,7 +2510,13 @@ async function executeTool(name, args, workdir, ctx) {
               try {
                 execSync(`taskkill /F /T /PID ${child.pid} 2>nul`, { windowsHide: true, timeout: 5000 });
               } catch(e) { /* 进程可能已经退出 */ }
-              resolve({ success: false, error: '命令执行超时（' + (timeout/1000) + '秒），已终止进程树', output: (stdout || '').slice(0, 3000) });
+              // 超时但 stdout 已有输出（docker build / npm install 等长任务在正常跑）
+              // 不判失败，返回"仍在运行"提示，避免分身已启动却误报失败
+              if (stdout && stdout.trim()) {
+                resolve({ success: true, output: '命令执行超过 ' + (timeout/1000) + ' 秒仍在运行（进程未被杀，继续在后台）：\n' + stdout.slice(0, 3000), stillRunning: true });
+              } else {
+                resolve({ success: false, error: '命令执行超时（' + (timeout/1000) + '秒），已终止进程树', output: (stdout || '').slice(0, 3000) });
+              }
             } else if (error) {
               resolve({ success: false, error: error.message, output: (stdout + stderr).slice(0, 3000) });
             } else {
@@ -2326,9 +2539,26 @@ async function executeTool(name, args, workdir, ctx) {
         const p = resolveProjPath(args.path);
         if (!fs.existsSync(p)) return { success: false, error: '文件不存在: ' + p };
         const stat = fs.statSync(p);
-        if (stat.size > 5 * 1024 * 1024) return { success: false, error: '文件过大（>5MB），请用其他方式查看' };
-        const content = fs.readFileSync(p, 'utf8');
-        return { success: true, content: content.slice(0, 20000) };
+        if (stat.size > 20 * 1024 * 1024) return { success: false, error: '文件过大（>20MB），请用其他方式查看' };
+        const ext = path.extname(p).toLowerCase();
+        let content;
+        if (ext === '.pdf') {
+          // PDF：提取文字层（pdf-parse / pdf.js）。扫描件（图片型 PDF）无文字层会返回空，如实告知。
+          const text = await extractPdfText(p);
+          if (!text || !text.trim()) {
+            return { success: false, error: '该 PDF 没有可提取的文字层（可能是扫描件/图片型 PDF）。' };
+          }
+          content = text;
+        } else if (ext === '.docx') {
+          // docx 本质是 zip，解包取 word/document.xml 后剥掉 XML 标签
+          const text = await extractDocxText(p);
+          if (text == null) return { success: false, error: '无法解析该 Word 文档（.docx 格式损坏或不完整）' };
+          content = text;
+        } else {
+          content = fs.readFileSync(p, 'utf8');
+        }
+        const sliced = String(content).slice(0, 20000);
+        return { success: true, content: sliced + (String(content).length > 20000 ? '\n\n[内容过长已截断，原文件共 ' + String(content).length + ' 字符]' : '') };
       }
       case 'write_file': {
         let p = resolveProjPath(args.path);
@@ -2763,6 +2993,7 @@ async function executeTool(name, args, workdir, ctx) {
           source: 'agent'
         });
         if (!r.success) return r;
+        memoryWrittenThisRound = true; // 收尾时据此判断无需强制补写
         return {
           success: true,
           action: r.updated ? 'updated' : 'added',
@@ -2802,13 +3033,103 @@ async function executeTool(name, args, workdir, ctx) {
 
       // ==================== 截图 / 界面自验证 ====================
       case 'capture_window': {
-        const res = args.title
-          ? await UiVerify.captureProgramWindow({ title: args.title, index: args.index, savePath: args.save_path })
-          : await UiVerify.captureAppWindow({ which: args.which || 'main', savePath: args.save_path });
+        // 分身（RDP 子会话）正在运行且未显式指定 title/which → 抓分身宿主窗口画面。
+        // 这样 AI 操作分身里的程序后截图，看到的就是分身里的内容，不用用户点进/放大小窗。
+        const DesktopSession = require('../desktopSession');
+        if (!args.title && !args.which && DesktopSession.status().state === 'running') {
+          const fr = await DesktopSession.captureFrame({ maxWidth: 1000 });
+          if (fr.success) {
+            const out = { success: true, target: 'desktop-clone', width: fr.width, height: fr.height, image: fr.png };
+            if (args.save_path) {
+              try { fs.writeFileSync(args.save_path, Buffer.from(fr.png.split(',')[1], 'base64')); out.path = args.save_path; } catch (e) {}
+            }
+            return out;
+          }
+        }
+        // 隔离桌面（桌面分身）只用于「不需要看界面」的任务，它的画面用户看不到，
+        // 所以这里**不再**抓分身整屏合成图 —— 一律走真实桌面 / 目标程序窗口。
+        // 默认目标：已 launch_project 启动被测程序 → 抓「它」的窗口；否则抓本应用窗口。
+        // 这样「验证外部项目却总截到自己页面」的根因被去掉。
+        const targetTitle = (!args.title && !args.which) ? resolveTestTargetTitle(workdir) : null;
+        let res;
+        if (args.title) {
+          res = await UiVerify.captureProgramWindow({ title: args.title, index: args.index, savePath: args.save_path, workdir });
+        } else if (targetTitle) {
+          res = await UiVerify.captureProgramWindow({ title: targetTitle, index: args.index, savePath: args.save_path, workdir });
+          if (!res.success) {
+            // 明确告诉模型「没截到被测程序」，并列出候选窗口；不要偷偷回退截本应用充数
+            return {
+              success: false,
+              error: '未能抓到被测程序窗口（标题含「' + targetTitle + '」）。不要改截本应用窗口充数——请确认被测程序已启动，或用 index / 显式 title 指定窗口。',
+              candidates: res.candidates
+            };
+          }
+          res.target = 'test-program';
+        } else {
+          res = await UiVerify.captureAppWindow({ which: args.which || 'main', savePath: args.save_path, workdir });
+          res.target = 'self-app';
+        }
         if (res.success) lastScreenshotPath = res.path;
         return res;
       }
       case 'verify_ui': {
+        // ② 外部程序窗口（如用户的项目/游戏/浏览器页面）：无法注入布局自检，
+        //    走「抓对方窗口画面 + 视觉模型复核」。2026-10-02 修复"验证贪吃蛇却截了自己应用页面"。
+        // 默认：若已 launch_project 启动被测程序且没传 title/which → 自动按外部程序（抓目标窗口）走，
+        //       避免又落回本应用布局自检（=截自己页面）。
+        const verifyTitle = args.title || ((!args.which) ? resolveTestTargetTitle(workdir) : null);
+        if (verifyTitle) {
+          const shot = await UiVerify.captureProgramWindow({ title: verifyTitle, index: args.index, workdir });
+          if (!shot.success) {
+            return { success: false, error: shot.error, candidates: shot.candidates,
+              hint: '未找到目标窗口：请确认对方程序已打开且窗口标题包含关键字，或换 title 关键字重试。' };
+          }
+          lastScreenshotPath = shot.path;
+
+          let vision = null;
+          if (args.analyze !== false) {
+            const question =
+              (args.expect ? '本次改动期望达到的效果：' + args.expect + '\n\n' : '') +
+              '请只针对界面缺陷做判断：有没有元素被裁掉/被遮挡、内容溢出被藏住、元素跑出窗口、排版错位、文字被截断、元素丢失、渲染异常（如方块化/花屏）？\n' +
+              '第一行必须是结论，格式严格为「结论：通过」或「结论：不通过」，第二行起再分点说明你看到的证据（引用具体位置）。';
+            vision = await analyzeImageWithVision({ imagePath: shot.path, question });
+          }
+          const visionVerdict = vision && vision.success ? parseVisionVerdict(vision.analysis) : null;
+
+          // 外部窗口没有布局自检数据，结论只能来自视觉复核；没有视觉复核时如实给 warn
+          let verdict = visionVerdict === 'fail' ? 'fail' : visionVerdict === 'pass' ? 'pass' : 'warn';
+
+          const lines = [];
+          lines.push('已抓取外部窗口「' + (shot.matched || verifyTitle) + '」画面（' + shot.width + '×' + shot.height + '）' + (args.title ? '' : '（未显式传 title，自动锁定 launch_project 启动的被测程序）'));
+          if (vision) {
+            if (vision.success) lines.push('视觉复核（' + vision.provider + ' / ' + vision.model + '）：' +
+              String(vision.analysis).split('\n').slice(0, 4).join(' / '));
+            else lines.push('视觉复核跳过：' + vision.error);
+          } else {
+            lines.push('视觉复核未执行（analyze=false 或未配置视觉模型）——外部窗口无法做布局自检，请人工确认截图。');
+          }
+          lines.push('→ 结论：' + (verdict === 'pass' ? '通过（pass）' : verdict === 'warn' ? '基本通过，存在中等问题/未能复核（warn）' : '未通过（fail）'));
+
+          return {
+            success: true,   // 注意：这是「工具执行成功」，不是「验证通过」
+            verdict,
+            passed: verdict === 'pass',
+            target: 'external:' + (shot.matched || args.title),
+            summary: lines.join('\n'),
+            audit: { skipped: '外部窗口无法注入布局自检，仅做视觉复核' },
+            screenshot: shot.path,
+            vision: vision ? (vision.success
+              ? { model: vision.model, provider: vision.provider, verdict: visionVerdict, analysis: vision.analysis }
+              : { error: vision.error }) : null,
+            next: verdict === 'pass'
+              ? '验证通过，可以结束本轮并如实向用户汇报（附上截图路径）。'
+              : verdict === 'fail'
+                ? '未通过：请按 vision 里的线索继续修改，改完再用相同 title 复验，直到 verdict=pass。'
+                : '未能自动复核（无视觉模型或被跳过）：请如实告知用户需人工确认，或配置视觉模型后再验。'
+          };
+        }
+
+        // ① 本应用窗口：布局自检 + 截图 + 视觉复核
         const which = args.which || 'main';
         const audit = await UiVerify.runUiAudit({
           which,
@@ -2817,10 +3138,10 @@ async function executeTool(name, args, workdir, ctx) {
           maxIssues: 25
         });
 
-        // 截图留证
+        // 截图留证（workdir：选了项目时落到 <项目>/screenshots/，见 uiVerify.shotsDirFor）
         let shot = null;
         if (args.screenshot !== false) {
-          shot = await UiVerify.captureAppWindow({ which });
+          shot = await UiVerify.captureAppWindow({ which, workdir });
           if (shot.success) lastScreenshotPath = shot.path;
         }
 
@@ -2848,17 +3169,17 @@ async function executeTool(name, args, workdir, ctx) {
 
         const lines = [];
         if (!audit.success) {
-          lines.push('⚠️ 布局自检没能执行：' + audit.error);
+          lines.push('布局自检没能执行：' + audit.error);
         } else if (issues.length === 0) {
-          lines.push('✅ 布局自检：未发现裁切 / 溢出 / 越界问题（扫描 ' + audit.scanned + ' 个可见元素）');
+          lines.push('布局自检通过：未发现裁切 / 溢出 / 越界问题（扫描 ' + audit.scanned + ' 个可见元素）');
         } else {
-          lines.push('❌ 布局自检发现 ' + issues.length + ' 个问题（严重 ' + highCount + ' / 中等 ' + midCount + '）');
+          lines.push('布局自检发现 ' + issues.length + ' 个问题（严重 ' + highCount + ' / 中等 ' + midCount + '）');
           issues.slice(0, 6).forEach(i => lines.push('   - [' + i.type + '] ' + i.element + ' ' + i.detail));
         }
         if (vision) {
-          if (vision.success) lines.push('👁 视觉复核（' + vision.provider + ' / ' + vision.model + '）：' +
+          if (vision.success) lines.push('视觉复核（' + vision.provider + ' / ' + vision.model + '）：' +
             String(vision.analysis).split('\n').slice(0, 4).join(' / '));
-          else lines.push('👁 视觉复核跳过：' + vision.error);
+          else lines.push('视觉复核跳过：' + vision.error);
         }
         lines.push('→ 结论：' + (verdict === 'pass' ? '通过（pass）' : verdict === 'warn' ? '基本通过，存在中等问题（warn）' : '未通过（fail）'));
 
@@ -2899,6 +3220,225 @@ async function executeTool(name, args, workdir, ctx) {
         });
         return { ...res, image: imgPath };
       }
+      case 'control_computer': {
+        // 桌面分身（悬浮预览小窗）优先：如果它正在运行，AI 操作的就是小窗里的程序。
+        // 输入经 RDP SendMouseEvent/SendKeyboardEvent 直接注入隔离子会话 —— 不移动/不点击真实桌面鼠标。
+        const DesktopSession = require('../desktopSession');
+        if (DesktopSession.status().state === 'running') {
+          cloneUsedInAgentRun = true;   // 这轮 AI 动了分身 → 收尾时自动收掉
+          const actionName = String(args.action || '');
+          const INPUT_ACTIONS = ['move', 'click', 'left_click', 'right_click', 'double_click', 'mouse_down', 'mouse_up', 'scroll', 'press', 'hotkey', 'type', 'paste'];
+          if (actionName === 'windows') {
+            return { success: false, error: '桌面分身（悬浮窗）模式下不支持 windows 窗口枚举（RDP 会话内窗口对主程序不可见）。请在悬浮窗里操作，或用截图确认画面。', mode: 'childSession' };
+          }
+          if (actionName === 'clipboard_get') {
+            const CC = require('../computerControl');
+            const c = CC.getClipboard();
+            return { success: c.success, text: c.text, error: c.error || undefined, desktopClone: { mode: 'childSession' } };
+          }
+          if (actionName === 'clipboard_set') {
+            const CC = require('../computerControl');
+            CC.setClipboard(args.text);
+            return { success: true, desktopClone: { mode: 'childSession' } };
+          }
+          if (!INPUT_ACTIONS.includes(actionName)) {
+            return { success: false, error: '该 action（' + actionName + '）在桌面分身（悬浮窗）模式下不支持。支持：' + INPUT_ACTIONS.join('/') + '、clipboard_get/set。坐标=悬浮窗客户区像素，与悬浮窗画面一致。', mode: 'childSession' };
+          }
+          const r = await DesktopSession.sendInput({ action: actionName, ...args });
+          return {
+            ...r,
+            desktopClone: { mode: 'childSession', note: '桌面分身悬浮窗模式：RDP SendMouseEvent/SendKeyboardEvent 直接注入子会话，不移动/不点击真实桌面鼠标；坐标=悬浮窗客户区像素，与悬浮窗画面一致' }
+          };
+        }
+        // 未打开悬浮窗 → CreateDesktop 无界面隐藏桌面（纯后台，不抢前台）
+        const Clone = require('../desktopClone');
+        const CC = require('../computerControl');
+        const actionName = String(args.action || '');
+        const st = Clone.status();
+        const running = st.state === 'running';
+
+        // windows：枚举隐藏桌面内可见窗口
+        if (actionName === 'windows') {
+          if (!running) return { success: false, error: '分身未运行，请先调用 launch_in_clone', needLaunch: true };
+          const w = await Clone.windows(args.keyword);
+          return {
+            success: w.success,
+            count: (w.windows || []).length,
+            windows: w.windows || [],
+            hint: (w.windows || []).length === 0 ? '隐藏桌面暂无可见窗口' : undefined,
+            error: w.error || undefined,
+            desktopClone: { mode: 'hiddenDesktop', desktop: Clone.DESKTOP_NAME }
+          };
+        }
+
+        // 以下动作都要求分身运行
+        if (!running) {
+          return {
+            success: false,
+            error: '分身未运行。请先调用 launch_in_clone 在隐藏桌面启动程序（如 notepad.exe、chrome.exe）。',
+            needLaunch: true,
+            mode: 'hiddenDesktop'
+          };
+        }
+
+        // 剪贴板（同会话系统剪贴板）
+        if (actionName === 'clipboard_get') {
+          const c = CC.getClipboard();
+          return { success: c.success, text: c.text, error: c.error || undefined, desktopClone: { mode: 'hiddenDesktop' } };
+        }
+        if (actionName === 'clipboard_set') {
+          const c = CC.setClipboard(args.text);
+          return { success: c.success, error: c.error || undefined, desktopClone: { mode: 'hiddenDesktop' } };
+        }
+        if (actionName === 'paste') {
+          CC.setClipboard(args.text);
+          const r = Clone.sendInput({ action: 'hotkey', keys: ['ctrl', 'v'] });
+          return { success: r.success, error: r.error || undefined, desktopClone: { mode: 'hiddenDesktop' } };
+        }
+
+        // 输入动作：SetThreadDesktop 附加到隐藏桌面后 SendInput 注入
+        const INPUT_ACTIONS = ['move', 'click', 'left_click', 'right_click', 'double_click', 'mouse_down', 'mouse_up', 'scroll', 'press', 'hotkey', 'type', 'paste'];
+        if (!INPUT_ACTIONS.includes(actionName)) {
+          return {
+            success: false,
+            error: '该 action（' + actionName + '）在隐藏桌面模式下不支持。支持：' + INPUT_ACTIONS.join('/') + '、windows、clipboard_get/set、paste。坐标 = 隐藏桌面屏幕坐标，与预览画面一致。',
+            desktopClone: { mode: 'hiddenDesktop' }
+          };
+        }
+        const ev = { action: actionName, ...args };
+        if (actionName === 'right_click' && !ev.button) ev.button = 'right';
+        const r = Clone.sendInput(ev);
+        return {
+          ...r,
+          desktopClone: { mode: 'hiddenDesktop', desktop: Clone.DESKTOP_NAME, note: 'CreateDesktop 隐藏桌面，SendInput 注入隐藏桌面，不抢前台光标；坐标=隐藏桌面屏幕坐标' }
+        };
+      }
+      case 'ensure_clone_desktop': {
+        // ★ 桌面分身 = RDP Child Session 悬浮预览小窗（BetterGI 同款）：输入栏上方实时显示隔离桌面画面。
+        //   "打开桌面分身" = 启动这个无标题栏预览小窗（RdpHost），用户能看到；它只是预览
+        //   （鼠标点不到里面的画面），双击可剥离成独立大窗（大窗才可交互）。
+        //   不是 CreateDesktop 无界面桌面。
+        const DesktopSession = require('../desktopSession');
+        const st = DesktopSession.status();
+        if (st.state === 'running') {
+          cloneUsedInAgentRun = true;
+          return { success: true, state: 'running', already: true, desktopClone: { mode: 'childSession' } };
+        }
+        // ★ state==='starting'：已有一次启动正在进行（上一轮工具调用触发、或分身正在自启）。
+        //   绝不能再次调用 DesktopSession.start() —— start 会先 taskkill 掉正在启动的宿主
+        //   （desktopSession.js:297），把刚拉起、还没连上的子会话杀掉，结果永远连不上 → 卡到超时。
+        //   正确做法：等它就绪、复用同一次启动。
+        if (st.state === 'starting') {
+          const r0 = await waitCloneRunning(75000);
+          if (r0.success) cloneUsedInAgentRun = true;
+          return {
+            success: r0.success,
+            state: r0.state || (r0.success ? 'running' : 'error'),
+            error: r0.error || undefined,
+            note: r0.success
+              ? '桌面分身已就绪（复用正在启动的实例）：主程序输入栏上方出现一个无标题栏的预览小窗，实时显示隔离桌面画面，它只是预览（鼠标点不到里面的画面）；右上角 ✕ 关闭，双击它剥离成独立大窗（标题栏 — 收回小窗 / ✕ 关闭）。用户当前桌面不受影响。'
+              : undefined,
+            desktopClone: { mode: 'childSession' }
+          };
+        }
+        const anchor = await currentCloneAnchor();
+        const r0 = await DesktopSession.start({
+          winBounds: anchor.winBounds,
+          anchorRect: anchor.anchorRect,
+          ownerHwnd: anchor.ownerHwnd
+        });
+        if (r0.success) cloneUsedInAgentRun = true;
+        return {
+          success: r0.success,
+          state: r0.state || (r0.success ? 'running' : 'error'),
+          error: r0.error || undefined,
+          note: r0.success
+            ? '桌面分身已就绪：主程序输入栏上方出现一个无标题栏的预览小窗，实时显示隔离桌面画面，' +
+              '它只是预览（鼠标点不到里面的画面）；右上角 ✕ 关闭，双击它剥离成独立大窗（标题栏 — 收回小窗 / ✕ 关闭）。' +
+              '用户当前桌面不受影响。可在其中启动程序（launch_in_clone）、操作程序（control_computer）。'
+            : undefined,
+          desktopClone: { mode: 'childSession' }
+        };
+      }
+      case 'launch_in_clone': {
+        // ★ 豆包式桌面分身（BetterGI 同款）：RDP Child Session 隔离桌面 + 小窗预览。
+        //   程序启动进隔离子会话，画面实时显示在小窗里（用户能看到）；全程静默提权、不打扰当前桌面。
+        const DesktopSession = require('../desktopSession');
+        let commandLine = String(args.command || args.cmd || '');
+        if (!commandLine) {
+          return { success: false, error: '需要 command 参数（要启动的程序命令行，如 "notepad.exe" 或 "chrome.exe https://example.com"）' };
+        }
+        // 解析中文/口头程序名（如"波点音乐"）为真实 exe 路径；已有路径的命令保持原样
+        const firstToken = commandLine.split(/\s+/)[0];
+        if (firstToken && !/^[a-zA-Z]:[\\\/]/.test(firstToken) && !firstToken.includes('\\') && !firstToken.includes('/')) {
+          const resolved = await resolveWindowsProgram(firstToken);
+          if (resolved && resolved !== firstToken) {
+            const rest = commandLine.slice(firstToken.length).trim();
+            commandLine = rest ? `${resolved} ${rest}` : resolved;
+            console.log('[launch_in_clone] 程序名解析:', firstToken, '->', resolved);
+          }
+        }
+        console.log('[launch_in_clone] 开始，command:', commandLine);
+
+        // 拆分 program 与 args：program 为可执行文件，其余为参数
+        const toks = commandLine.match(/"[^"]*"|[^\s]+/g) || [];
+        const program = toks.shift().replace(/^"|"$/g, '');
+        const progArgs = toks.join(' ');
+
+        // 确保桌面分身已在运行（静默启动；首次仅注册时弹一次 UAC）
+        const st = DesktopSession.status();
+        if (st.state !== 'running') {
+          let needStart;
+          if (st.state === 'starting') {
+            // 正在启动：等它就绪，不要重复 spawn（重复会 taskkill 掉正在启动的宿主导致连接失败）
+            needStart = await waitCloneRunning(75000);
+          } else {
+            const anchor = await currentCloneAnchor();
+            needStart = await DesktopSession.start({
+              winBounds: anchor.winBounds,
+              anchorRect: anchor.anchorRect,
+              ownerHwnd: anchor.ownerHwnd
+            });
+          }
+          if (!needStart.success) {
+            return { success: false, error: needStart.error || '桌面分身未能启动', needAuth: needStart.needAuth };
+          }
+        }
+        const lr = await DesktopSession.launchInSession(program, progArgs, '');
+        if (lr.success) cloneUsedInAgentRun = true;
+        return {
+          success: lr.success,
+          state: lr.success ? 'running' : 'error',
+          launch: lr,
+          error: lr.error || undefined,
+          desktopClone: {
+            mode: 'childSession',
+            sessionId: lr.sessionId,
+            note: lr.success
+              ? '已在隔离子会话（桌面分身预览小窗可见）启动程序，画面实时显示在输入栏上方的小窗里（预览，点不到画面；双击可剥离成大窗操作）；全程静默提权，无 UAC'
+              : undefined
+          }
+        };
+      }
+      case 'launch_project': {
+        const ProjectLauncher = require('../projectLauncher');
+        // dir 默认用当前工作目录（workdir）
+        const dir = args.dir || workdir || '';
+        const r = await ProjectLauncher.launchProject(args.action || 'launch', { ...args, dir });
+        // 成功启动了被测程序 → 记下它的窗口标题，后续截图/验证默认指向它（而非本应用）
+        if (r && r.launched) {
+          const t = r.windowTitleHint || r.name;
+          setTestTarget({ title: t, dir, url: r.url });
+          const note = '已记为当前被测程序：后续 capture_window / verify_ui 不传 title 时会默认抓它的窗口「' +
+            t + '」' + (r.url ? '（页面地址 ' + r.url + '）' : '') + '；若标题不匹配，用 index 或显式 title 指定。';
+          r.hint = r.hint ? (r.hint + ' ' + note) : note;
+        }
+        return r;
+      }
+      case 'ask_user':
+        // 正常由 agentChat 循环拦截（在聊天里等用户点选/输入）；走到这里是异常或恢复链路漏出，
+        // 直接给可继续的结果，绝不能把任务卡死
+        return { success: true, answered: false, answer: '（此处无法向用户弹出选项，请按你判断的最佳方案继续执行，并在汇报里说明做法）' };
       default:
         return { success: false, error: '未知工具: ' + name };
     }
@@ -2912,15 +3452,140 @@ let activeReq = null;
 let chatCancelled = false;
 function cancelChat() {
   chatCancelled = true;
+  // 用户停止任务时，正在等待的"询问用户"也要立即放行，否则循环会一直挂在 await 上
+  if (pendingUserAsk) { const p = pendingUserAsk; pendingUserAsk = null; p.resolve({ success: true, answered: false, cancelled: true, answer: '（用户已停止任务）' }); }
   if (activeReq) { try { activeReq.destroy(); } catch(e) {} activeReq = null; }
 }
 function cancelAgentChat() { cancelChat(); }
 
+// 本轮（一次 agentChat）是否已经写过长期记忆。收尾时用来判断要不要强制补写。
+let memoryWrittenThisRound = false;
+
+// 本轮 AI 任务有没有动过桌面分身（开了分身 / 在分身里启动程序 / 操作分身）。
+// 有的话，agent-done 时自动把分身收掉 —— 用户要求"托盘运行直到 AI 运行完成，或者我点击关闭"。
+// 只收"AI 这轮用过的"分身：用户自己从面板手动开的、AI 没碰过的，不动它。
+let cloneUsedInAgentRun = false;
+
+/**
+ * 收尾强制更新记忆：选项目 且 本轮还没写入过记忆时，把本轮结论 + 改动蒸馏成一条记忆
+ * 写进项目 memory.md，然后再结束。确定性执行，不依赖模型自己记得调 memory_save。
+ * @returns {object|null} 写入的记忆摘要（未写/失败返回 null）
+ */
+function finalizeMemoryIfNeeded(workdir, summary, files) {
+  if (!workdir || memoryWrittenThisRound) return null;
+  const clean = String(summary || '').replace(/\s+/g, ' ').trim();
+  const fileList = Array.isArray(files) ? files : [];
+  if (!clean && !fileList.length) return null; // 没有任何可记的内容就不硬写
+  try {
+    MemoryStore.ensureScope(MemoryStore.scopePathForWorkdir(workdir));
+    const parts = [];
+    if (clean) parts.push(clean.slice(0, 300));
+    if (fileList.length) parts.push('（本次涉及文件：' + fileList.slice(0, 8).join('、') + (fileList.length > 8 ? ' 等' : '') + '）');
+    const text = '【项目收尾记录】' + parts.join('');
+    const r = MemoryStore.add({
+      text,
+      kind: fileList.length ? 'fix' : 'project',
+      tags: ['auto', path.basename(workdir)],
+      source: 'auto-finalize'
+    });
+    memoryWrittenThisRound = true;
+    console.log('[Agent] 收尾强制写入项目记忆:', r && r.item ? r.item.id : '(失败)');
+    return r;
+  } catch (e) {
+    console.warn('[Agent] 收尾强制写记忆失败:', e.message);
+    return null;
+  }
+}
+
+/**
+ * 生成一次任务的结构化收尾总结（做了什么 / 成果如何 / 注意点）。
+ * ★ 用户要求：完成后由 AI 自己总结成果再存入记忆，而不是把聊天记录原文存进项目。
+ * 用一次轻量 LLM 调用（不流式、小 maxTokens、20s 超时）生成总结；
+ * 失败时退化为确定性的启发式摘要（改动文件 + 最终回答首行要点）。
+ */
+function heuristicRunSummary(userQuestion, finalAnswer, files, interrupted) {
+  const parts = [];
+  if (interrupted) parts.push('【未完成】达到最大迭代次数停止，改动可能不完整。');
+  if (files && files.length) parts.push('改动 ' + files.length + ' 个文件：' + files.slice(0, 5).join('、') + (files.length > 5 ? ' 等' : '') + '。');
+  const firstLine = String(finalAnswer || '').split('\n').map(s => s.trim()).filter(s => s.length > 5 && !s.startsWith('#'))[0] || '';
+  if (firstLine) parts.push(firstLine.slice(0, 120));
+  return parts.join(' ') || '完成一次对话，无文件改动。';
+}
+
+async function generateRunSummary(provider, userQuestion, finalAnswer, files, interrupted) {
+  const fallback = heuristicRunSummary(userQuestion, finalAnswer, files, interrupted);
+  try {
+    if (!provider) return fallback;
+    const fileList = (files || []).slice(0, 10).join('、') || '无';
+    const msgs = [
+      { role: 'system', content: '你是项目助理。把刚完成的任务浓缩成一条长期记忆，供以后的会话快速了解这次改动。要求：\n' +
+        '1) 三行以内，依次写【做了什么】【成果如何】【注意点(可选)】；\n' +
+        '2) 只写结论性信息，禁止复述对话原文或代码细节；\n' +
+        '3) 总共 150 字以内，直接输出内容本身。' },
+      { role: 'user', content: '用户问题：' + String(userQuestion || '').slice(0, 300) +
+        '\n改动文件：' + fileList +
+        '\n最终回答（节选）：' + String(finalAnswer || '').slice(0, 800) +
+        (interrupted ? '\n（注意：本次任务因达到最大迭代次数被中断，改动可能未完成）' : '') }
+    ];
+    const summaryCall = callProviderAPI(provider, msgs, 0.3, 300, false, null, false);
+    const timeout = new Promise(resolve => setTimeout(() => resolve(null), 20000));
+    const r = await Promise.race([summaryCall, timeout]);
+    const text = r && r.success ? String(r.content || '').trim() : '';
+    if (!text || text.length < 4) return fallback;
+    return text.slice(0, 400);
+  } catch (e) {
+    console.warn('[Agent] 收尾总结生成失败，用启发式摘要:', e.message);
+    return fallback;
+  }
+}
+
+/**
+ * 任务收尾统一入口：生成总结 → 写入项目记忆 + changes/ 改动记录。
+ * 替代旧的"直接把最终回答原文塞进记忆/changes"的做法。
+ */
+async function finalizeRunRecord({ workdir, provider, userQuestion, finalAnswer, files, interrupted, title }) {
+  const fileList = Array.isArray(files) ? files : [];
+  const summary = await generateRunSummary(provider, userQuestion, finalAnswer, fileList, interrupted);
+  finalizeMemoryIfNeeded(workdir, summary, fileList);
+  if (workdir && fileList.length) {
+    try {
+      ProjectWorkspace.appendChange(workdir, {
+        title: title || '本次改动',
+        question: userQuestion,
+        summary,
+        files: fileList
+      });
+    } catch (e) {
+      console.warn('[Agent] 写入改动记录失败:', e.message);
+    }
+  }
+  return summary;
+}
+
 // Agent 对话（支持工具调用循环 + 思考过程流式输出）
-async function agentChat({ messages, providerId, temperature, maxTokens, thinkMode, enabledTools, autoAuthorize, roleId, systemPrompt: customSystemPrompt, contextWindow, workdir, conversationId }, broadcastFn) {
+
+// 会话模式（普通聊天）仅允许「识别/解读类」工具，其它工具一律硬阻断。
+// ensure_clone_desktop 是例外：它只开关一个 RDP 悬浮窗，不读写用户文件、不执行命令、
+// 不操作别的程序，副作用仅是多一个用户自己看得见的窗口。用户在普通对话里说
+// "打开桌面分身"如果被硬阻断，模型就只能反复解释而永远做不了（历史 bug）。
+const RECOGNITION_TOOLS = _agentCfg.policy.recognitionTools || [];
+
+async function agentChat({ messages, providerId, temperature, maxTokens, thinkMode, enabledTools, autoAuthorize, roleId, systemPrompt: customSystemPrompt, contextWindow, workdir, conversationId, interactive, source }, broadcastFn) {
+  // 新对话：清空"本轮已允许工具"集合，每次任务开头重新确认一次敏感工具
+  sessionAllowedTools = new Set();
   chatCancelled = false;
+  memoryWrittenThisRound = false; // 每轮重置：收尾时判断本轮有没有写过记忆
+  cloneUsedInAgentRun = false;    // 每轮重置：收尾时判断要不要自动收掉桌面分身
+  // 告诉分身宿主"有 AI 任务在跑"：任务期间主程序被关掉也**不销毁**分身，只在后台继续跑
+  // （用户要求："目前主程序点击 x 会直接关闭销毁，但是当有任务运行时不会关闭，会在后台运行"）。
+  try { require('../desktopSession').setTaskRunning(true); } catch (e) { /* 忽略 */ }
   // 待办清单按会话隔离；前端没传时退化为 'default'（旧版本前端也能跑）
-  const convCtx = { conversationId: conversationId || 'default' };
+  // source: 'work'(工作模式) / 'pet'(宠物输入框) / 'conversation'(会话模式)。后两者之外的未知值按工作模式处理。
+  const conversationMode = source === 'conversation';
+  const convCtx = { conversationId: conversationId || 'default', allowedTools: conversationMode ? new Set(RECOGNITION_TOOLS) : null };
+  // ask_user（询问用户）只有在支持选项卡 UI 的窗口（主窗口聊天传 interactive:true）才真正等待；
+  // 桌宠等环境没有选项卡，直接按模型最佳判断继续，避免干等卡死
+  const canAskUser = interactive === true;
   const provider = findProvider(providerId);
   if (!provider) return { success: false, error: '未找到 AI 提供商配置' };
   cancelLocalModelUnload();
@@ -2948,9 +3613,44 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
 - 当你决定需要使用工具时，**必须实际输出 tool_calls 结构化数据**，绝对不能只在思考（reasoning）中描述"我要调用xx工具"而不实际输出
 - 思考（reasoning）只是你的内部规划过程，不是工具调用本身。只在思考中描述工具调用不会执行任何工具
 - 如果你在思考中决定要调用某个工具，就必须在回答中实际输出该工具的 tool_calls 结构化数据（包含 name 和 arguments）
-- 工具调用格式：输出包含 function.name 和 function.arguments 的 tool_calls 数组，不要用文本描述代替`;
-  // 项目工作目录：若用户选择了项目，在 system prompt 末尾告知 AI 所有相对路径/命令都在此目录内进行
+- 工具调用格式：输出包含 function.name 和 function.arguments 的 tool_calls 数组，不要用文本描述代替
+
+## 边做边说（实时进度叙述，所有角色必须遵守）
+- 每次调用工具之前，先用一句简短的正文说明你接下来要做什么（例如："先定位会话列表的渲染代码"、"再查看删除按钮的绑定逻辑"），然后立刻发起工具调用
+- 多步任务中每完成一步、准备下一步时，也用一行正文说明进展和发现
+- 这些正文会实时流式展示给用户，让用户看到"做到哪一步了"；不要攒到最后一次性总结
+- 叙述必须简短（一句话），不要长篇大论，不要在叙述里编造工具结果`;
   let finalSystemPrompt = roleSystemPrompt;
+  // Few-shot 示例注入（examples.yaml）：core.md 讲的是"规则"，这里补"示范答案长什么样"。
+  // 放在强制要求之后 —— 放前面会被后面那段"必须输出 tool_calls"冲淡。
+  try {
+    const exBlock = _agentCfgRaw.renderExamples('agent');
+    if (exBlock) finalSystemPrompt += exBlock;
+  } catch (e) {
+    console.warn('[Agent] 注入示例失败:', e.message);
+  }
+  // MCP 提示片段：只解释 mcp_ 前缀的来源与失败处理，工具 schema 本身已随请求发出。
+  // 刻意写得很短 —— 这里是每轮都带的常驻开销。
+  try {
+    const mcpNotice = _mcp.buildPromptNotice();
+    if (mcpNotice) finalSystemPrompt += mcpNotice;
+  } catch (e) {
+    console.warn('[Agent] 注入 MCP 提示失败:', e.message);
+  }
+  // 技能（能力包）索引：只列「名字 + 触发场景 + 读取路径」，全文让 AI 按需 read_file。
+  try {
+    const skillNotice = _marketplace.skillsNotice();
+    if (skillNotice) finalSystemPrompt += skillNotice;
+  } catch (e) {
+    console.warn('[Agent] 注入技能提示失败:', e.message);
+  }
+  // 项目工作目录：若用户选择了项目，在 system prompt 末尾告知 AI 所有相对路径/命令都在此目录内进行
+  // 个性化（人格 / 回复风格 / 自定义指令 / 近期动向）：追加在角色提示词之后，
+  // ⚠️ 只能追加不能替换 —— 上面那段「工具调用强制要求」被冲掉的话 agent 就不调工具了。
+  try {
+    const pb = buildPersonalizationBlock({ forAgent: true });
+    if (pb) finalSystemPrompt += '\n\n' + pb;
+  } catch (e) { /* 个性化注入失败不影响主流程 */ }
   if (workdir) {
     finalSystemPrompt += `
 
@@ -2958,7 +3658,24 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
 - 你当前的工作目录（项目根）是：${workdir}
 - 所有相对路径（如 src/xxx.js、./data）都基于此目录解析；读写文件、列目录、搜索文件时，未给绝对路径的一律相对于该目录。
 - 执行命令（run_shell）时也默认在此目录下运行。
-- 除非用户明确要求操作其他位置，否则不要把文件写到该目录之外。`;
+- 除非用户明确要求操作其他位置，否则不要把文件写到该目录之外。
+- 你的长期记忆与项目分析都保存在该项目的隐藏文件夹 .ai_workspace/ 下（memory/ 记忆、context/ 分析、changes/ 按天改动），跨会话保留，可随时用 read_file 查看核对。`;
+  }
+  // 选项目后：先初始化隐藏工作区（含三个子文件夹），并自动分析项目上下文——在理解用户问题之前注入
+  if (workdir) {
+    try {
+      ProjectWorkspace.ensureInit(workdir);
+      const pcBlock = ProjectContext.buildContextBlock(workdir, getLastUserMessage(messages));
+      if (pcBlock) finalSystemPrompt += '\n\n' + pcBlock;
+    } catch (e) {
+      console.warn('[Agent] 生成项目上下文/初始化工作区失败:', e.message);
+    }
+  }
+  // 长期记忆按项目隔离：选项目时存到 <项目>/.ai_workspace/memory/memory.json，否则用全局
+  try {
+    MemoryStore.ensureScope(MemoryStore.scopePathForWorkdir(workdir));
+  } catch (e) {
+    console.warn('[Agent] 切换记忆作用域失败:', e.message);
   }
   // 长期记忆注入：按当前问题的相关度挑若干条塞进系统提示词，让 AI 不用每次重新问用户
   try {
@@ -2970,6 +3687,17 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
   } catch (e) {
     console.warn('[Agent] 注入长期记忆失败:', e.message);
   }
+  // windows-mcp 已启用时：告诉 AI 本机界面操作优先用它的工具（比内置 control_computer 更准）
+  try {
+    const mcpTools = getMcpToolNames();
+    const hasWinMcp = mcpTools.some(n => /snapshot|click|move|type|shortcut|screenshot|waitfor|clipboard/i.test(n));
+    if (hasWinMcp) {
+      finalSystemPrompt += '\n\n## 本机界面操作优先级\n'
+        + '当前已启用 Windows MCP（截图/UIA元素树/鼠标键盘/剪贴板/文件注册表）。'
+        + '需要操作用户本机程序界面时，**优先用 MCP 工具**（Snapshot 拿元素树、Click/Type 操作、Screenshot 截图、WaitFor 等待），'
+        + '不要用内置 control_computer 纯坐标注入——MCP 的 UIA 语义定位更准、不依赖坐标猜测。';
+    }
+  } catch (e) { /* 忽略 */ }
   // 待办清单注入：让模型每一轮都能看到「整体目标 + 现在做到哪一步」，这是"保留实现过程"的关键
   try {
     const todoBlock = TodoStore.buildPromptBlock(convCtx.conversationId);
@@ -2980,14 +3708,20 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
   } catch (e) {
     console.warn('[Agent] 注入待办清单失败:', e.message);
   }
-  const ALL_TOOL_NAMES = AGENT_TOOLS.map(t => t.function.name);
-  const roleTools = (role.tools && role.tools.length > 0 ? role.tools : ALL_TOOL_NAMES)
-    .filter(n => ALL_TOOL_NAMES.includes(n));
-  // 后加的安全工具（记忆 / 界面自验证）对所有角色强制放开：
-  // 老版本保存的自定义角色 tools 里没有这些名字，不做并集的话升级后它们永久不可见。
-  TOOLS_ALWAYS_ALLOWED.forEach(n => {
-    if (ALL_TOOL_NAMES.includes(n) && !roleTools.includes(n)) roleTools.push(n);
-  });
+  // 会话模式约束：只允许识别/解读类工具，禁止启动程序/操作电脑/文件读写/命令执行等
+  if (conversationMode) {
+    finalSystemPrompt += `
+
+## 当前为「会话模式」（普通对话）
+- 你**只允许使用识别/解读类工具**来识别图片、截图、界面：analyze_screenshot（看图分析）、verify_ui（界面自验证）、capture_window（截取窗口画面）。
+- **唯一例外的动作工具**：ensure_clone_desktop（打开桌面分身悬浮窗）。用户说"打开桌面分身"/"启动分身"时直接调用它，它只是开关一个用户可见的悬浮窗口，不读写文件、不执行命令。
+- **禁止使用**其余动作类工具，即使用户明确要求也不行：launch_in_clone（启动程序）、control_computer（操作电脑）、run_shell、read_file、write_file、file_search、directory_list、web_search、web_fetch、memory_save 等。
+- 如果用户想启动程序、操作电脑、读写文件、执行命令，请告诉用户：「这些操作请在『工作模式』（打开 Agent/工具开关）下进行，会话模式只支持看图识别。」`;
+  }
+  // 每次请求刷新一次 MCP 工具（内部有 5 秒 TTL，不会每次真去问子进程）
+  const ALL_TOOLS = await getAllTools();
+  const ALL_TOOL_NAMES = ALL_TOOLS.map(t => t.function.name);
+  const roleTools = resolveRoleTools(role.tools, ALL_TOOL_NAMES);
 
   const temp = typeof temperature === 'number' ? temperature : (role.temperature || 0.7);
   const isOllama = provider.type === 'ollama';
@@ -3007,6 +3741,17 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
     if (thinkMode && tokens < 2048) tokens = 8192;
   }
   let accumulatedContent = '';
+  // ── 闲聊/寒暄判定（提前到工具筛选之前，供"最小化工具"和"关思考"共用）──
+  // ⚠️ 严格防误判：除了消息本身像闲聊，还要求"本轮对话还没走过工具/助手回合"——
+  //    否则用户在任务中途说"好的/继续"也会被当成闲聊，导致工具被砍掉、任务答非所问。
+  const lastUserMsgForChat = getLastUserMessage(messages) || '';
+  const priorAssistantTurnsForChat = (messages || []).filter(m => m && m.role === 'assistant').length;
+  const priorToolCallsForChat = (messages || []).some(m => m && Array.isArray(m.tool_calls) && m.tool_calls.length);
+  const looksLikeChattyMsg = ProjectContext.isChattyMessage(lastUserMsgForChat);
+  const skipThinkForChat = looksLikeChattyMsg && priorAssistantTurnsForChat <= 1 && !priorToolCallsForChat;
+  if (looksLikeChattyMsg && !skipThinkForChat) {
+    console.log('[Agent] 消息像闲聊但对话已在进行中（assistantTurns=' + priorAssistantTurnsForChat + ', priorToolCalls=' + priorToolCallsForChat + '），按任务处理');
+  }
   // 根据设置过滤工具：优先用用户指定的 enabledTools，否则用角色配置的工具。
   // 注意：早期前端只暴露了 5 个工具，enabledTools 一旦非空就会把 web_search 等关键工具
   // 静默屏蔽掉，模型"有想法没工具"→ 反复重试 → 空输出。这里做三层兜底：
@@ -3017,27 +3762,78 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
   const requestedTools = Array.isArray(enabledTools)
     ? enabledTools.filter(n => ALL_TOOL_NAMES.includes(n))
     : [];
-  // 无风险工具 = 全部工具 - 有风险工具
-  const safeToolNames = ALL_TOOL_NAMES.filter(n => !RISKY_TOOLS.has(n));
+  // MCP 工具的启用由 mcpManager 的 enabled 集合决定（用户在设置页勾选），
+  // 不走「安全工具默认全开」那套 —— 外部进程默认不该被自动授权。
+  const mcpToolNames = getMcpToolNames();
+  // 无风险工具 = 全部工具 - 有风险工具 - MCP 工具（MCP 一律要显式勾选）
+  const safeToolNames = ALL_TOOL_NAMES.filter(n => !RISKY_TOOLS.has(n) && !mcpToolNames.includes(n));
   // 有风险工具 = 用户显式启用的 ∩ 角色允许的
   const enabledRiskyTools = requestedTools.filter(n => RISKY_TOOLS.has(n) && roleTools.includes(n));
-  // 最终启用的工具 = 无风险工具（角色允许的）+ 用户显式启用的有风险工具
+  // MCP 工具 = mcpManager 已启用的全部工具（用户在连通器/MCP 商城里手动启停，
+  // 不受角色 tools 列表限制——角色里列不全 mcp_xxx 这种动态名字）
+  const enabledMcpTools = mcpToolNames.slice();
+  // 最终启用的工具 = 无风险工具（角色允许的）+ 用户显式启用的有风险工具 + 已启用的 MCP 工具
   const activeToolNames = [
     ...safeToolNames.filter(n => roleTools.includes(n)),
-    ...enabledRiskyTools
+    ...enabledRiskyTools,
+    ...enabledMcpTools
   ];
-  let activeTools = AGENT_TOOLS.filter(t => activeToolNames.includes(t.function.name));
-  if (activeTools.length === 0) {
+  let activeTools = ALL_TOOLS.filter(t => activeToolNames.includes(t.function.name));
+  if (conversationMode) {
+    // 会话模式：仅暴露识别/解读类工具，其余硬屏蔽（含MCP 工具与回退逻辑）
+    activeToolNames.length = 0;
+    RECOGNITION_TOOLS.forEach(n => { if (ALL_TOOL_NAMES.includes(n)) activeToolNames.push(n); });
+    activeTools = ALL_TOOLS.filter(t => activeToolNames.includes(t.function.name));
+    console.log('[Agent] 会话模式：工具已限制为识别/解读类:', activeToolNames.join(','));
+  } else if (activeTools.length === 0) {
     console.log('[Agent] 工具过滤后无可用工具，回退为角色工具:', roleTools.join(','));
     activeToolNames.length = 0;
     roleTools.forEach(n => activeToolNames.push(n));
-    activeTools = AGENT_TOOLS.filter(t => activeToolNames.includes(t.function.name));
+    activeTools = ALL_TOOLS.filter(t => activeToolNames.includes(t.function.name));
+  }
+  if (mcpToolNames.length) {
+    console.log('[Agent] MCP 工具已注入(' + enabledMcpTools.length + '/' + mcpToolNames.length + '):', enabledMcpTools.join(','));
   }
   console.log('[Agent] 本次会话可用工具(' + activeTools.length + '):', activeToolNames.join(','));
+
+  // ── 闲聊/寒暄：工具列表最小化 ──
+  // "你好"这种消息根本不需要 run_shell / read_file / web_search，全量 schema 灌进去
+  // 既费 token 又容易让模型手痒调工具。只留 memory/todo 这类非侵入性工具，其他全砍。
+  if (skipThinkForChat && !conversationMode) {
+    const CHAT_KEEP_TOOLS = new Set(['memory_save', 'memory_search', 'memory_list', 'memory_delete', 'todo_write', 'todo_update', 'todo_read']);
+    const kept = activeTools.filter(t => CHAT_KEEP_TOOLS.has(t.function.name));
+    if (kept.length < activeTools.length) {
+      activeTools = kept;
+      activeToolNames.length = 0;
+      activeTools.forEach(t => activeToolNames.push(t.function.name));
+      console.log('[Agent] 闲聊消息：工具最小化，仅保留', activeToolNames.join(',') || '（空）');
+    }
+  }
+
+  // ── 工具路由：按用户问题筛选相关工具，减少 token ──
+  // 工具总数多的时候，只露相关的工具给模型，省显存。
+  // 工具少时自动跳过（router 内部判断阈值），不会影响体验。
+  if (!conversationMode && activeTools.length >= 15) {
+    const lastUserMsg = getLastUserMessage(messages) || '';
+    const routeResult = _toolRouter.route(activeTools, lastUserMsg, {
+      mcpToolIndex: _mcp._state.toolIndex
+    });
+    if (routeResult.filtered) {
+      activeTools = routeResult.tools;
+      activeToolNames.length = 0;
+      activeTools.forEach(t => activeToolNames.push(t.function.name));
+      console.log('[Agent] 工具路由生效: ' + routeResult.reason);
+    }
+  }
 
   // 模型点名了已注册但当前未启用的工具 → 自动放行，避免"想用却用不了"的死循环
   const ensureToolEnabled = (name) => {
     if (!name || !ALL_TOOL_NAMES.includes(name)) return false;
+    // 会话模式：非识别/解读类工具一律拒绝自动启用（硬阻断）
+    if (conversationMode && !RECOGNITION_TOOLS.includes(name)) {
+      console.log('[Agent] 会话模式拒绝自动启用非识别工具:', name);
+      return false;
+    }
     if (activeToolNames.includes(name)) return true;
     // 角色的工具范围仍然生效：角色明确排除的工具不自动放行
     if (!roleTools.includes(name)) {
@@ -3045,10 +3841,16 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
       return false;
     }
     console.log('[Agent] 工具 ' + name + ' 未在启用列表中，按模型请求自动放行');
+    // MCP 工具不走「模型点名就自动放行」：外部进程的工具必须用户在设置里显式启用。
+    // 否则模型只要猜到mcp_xxx 名字就能让本应用去起子进程。
+    if (getMcpToolNames().includes(name)) {
+      console.warn('[Agent] MCP 工具未在 mcpManager 中启用，拒绝自动放行:', name);
+      return false;
+    }
     activeToolNames.push(name);
-    const def = AGENT_TOOLS.find(t => t.function.name === name);
+    const def = ALL_TOOLS.find(t => t.function.name === name);
     if (def) activeTools.push(def);
-    emit('agent-content', { text: '\n> ⚙️ 自动启用工具 `' + name + '`（模型请求）', iteration });
+    emit('agent-content', { text: '\n> 自动启用「' + toolLabelCN(name) + '」（模型请求）', iteration });
     return true;
   };
 
@@ -3057,18 +3859,104 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
 
   const emit = (type, data) => {
     if (broadcastFn) broadcastFn('ai:response', { type, ...data, roleId: role.id });
+    // 任务收尾：本轮 AI 动过桌面分身 → 自动收掉。
+    // 用户要求"托盘运行直到 AI 运行完成，或者我点击关闭"——AI 跑完就是其中一条结束条件。
+    // 用户自己从面板手动开、AI 没碰过的分身不受影响（cloneUsedInAgentRun 只在本轮被工具置位）。
+    if (type === 'agent-done' && cloneUsedInAgentRun) {
+      cloneUsedInAgentRun = false;
+      console.log('[Agent] 本轮任务结束，自动收掉桌面分身');
+      try { require('../desktopSession').stop({ graceMs: 1500 }); } catch (e) { /* 忽略 */ }
+    } else if (type === 'agent-done') {
+      // 本轮没动过分身：也要把"任务在跑"标记清掉，否则主窗口关掉后分身会一直挂着
+      try { require('../desktopSession').setTaskRunning(false); } catch (e) { /* 忽略 */ }
+    }
   };
 
   let iteration = 0;
-  const maxIterations = role.maxIterations || 8;
+  let emptyRetryUsed = false;  // 模型空内容自动重试（只重试一次）
+  // 用户要求无硬上限：高强度多步任务不强制中断。
+  // role.maxIterations 缺失或 <= 0 都视为不限；正数才作为硬上限。
+  // 仍有两道软刹车防死循环：模型连续"只说不做"重试上限、400 错误重试上限。
+  const configuredMax = Number(role.maxIterations);
+  const maxIterations = (!configuredMax || configuredMax <= 0) ? Number.POSITIVE_INFINITY : configuredMax;
   let hasRetriedNoToolCalls = false; // 防止"只说不做"无限重试
   let hasRetriedMalformed = false;   // 防止"请求体不合法(400)"重试死循环
   let currentThinkMode = thinkMode; // 重试时可关闭 think 模式，强制模型直接输出 tool_calls
+  // 闲聊/寒暄（"你好"、"谢谢"）：强制关闭思考模式（skipThinkForChat 在上面工具筛选前已算好）
+  if (skipThinkForChat) {
+    currentThinkMode = false;
+    console.log('[Agent] 闲聊消息（"' + lastUserMsgForChat.slice(0, 20) + '"），本轮强制关闭思考模式');
+  }
   // 待办收尾对账：本轮碰过待办清单（规划或推进过），交答案前必须让清单落地，
   // 否则模型干完活直接回答、清单停在 0/3 —— 用户看到的现象就是"做完了但不会画线结束"。
   let todoTouched = false;
   let todoReconciled = false;
   let toolExecutedLastIteration = false; // 上一轮是否执行了工具（用于判断模型回答是中间步骤还是最终答案）
+  // 模型点名了某工具、但被权限拦下时记下来：收尾要用它给出"该去哪放开"的明确提示，
+  // 而不是把模型的推脱（"我无法打开"）或一句驴唇不对马嘴的"请开启思考模式"丢给用户。
+  let blockedToolName = '';
+  let blockedToolReason = '';
+
+  // 「先检查项目再解析需求」门禁：选了项目时，模型在给出最终答案前必须真的读过一次项目代码
+  // （read_file / file_search / directory_list）。只给它一份静态项目摘要它仍会凭空猜，
+  // 所以这里在代码层卡一道：没检查过就退回一轮，要求先检查项目再作答（只退一次，避免死循环）。
+  let projectInspected = false;
+  let projectInspectNudged = false;
+  const INSPECT_TOOLS = new Set(['read_file', 'file_search', 'directory_list']);
+
+  // 「先检查项目再动手（改代码）」门禁：选了项目、模型还没读过任何项目代码就想写文件 → 拦截，
+  // 强制它先 read_file 看真实代码再改。解决"AI 不看项目就乱改"。
+  // 最多拦 WRITE_GATE_MAX 次后放行（附警告），避免模型反复硬闯导致死循环。
+  const WRITE_GATE_MAX = 2;
+  let writeGateBlocks = 0;
+  const shouldBlockWrite = (toolName) => {
+    if (!workdir) return false;               // 没选项目 → 不拦
+    if (!WRITE_TOOLS.has(toolName)) return false; // 只拦写类工具
+    if (projectInspected) return false;       // 已检查过 → 放行
+    return true;
+  };
+  const writeGateResult = (toolName) => ({
+    success: false,
+    error: '已拦截：还没检查过项目代码，不能直接' + toolLabelCN(toolName) + '。',
+    hint: '先检查项目再动手：用 file_search / directory_list 定位相关文件，用 read_file 读关键文件，' +
+      '确认现状与调用链后，再基于你实际看到的代码来改。不要凭项目摘要或猜测盲改。'
+  });
+
+  // 本轮「写过/改过」的文件清单 → 收尾时随 agent-done 发出，渲染端做成可点击的列表。
+  // 用途：AI 的收尾总结里要列「改了哪些文件」，这里给的是**系统实际记录**，
+  // 比让模型自己回忆可靠；渲染端把路径做成可点击打开。
+  const changedFiles = new Map(); // 绝对路径 → 相对项目根的展示路径
+  // 本轮用过的工具名（记进「近期动向」，用于 AI 进化训练）
+  const usedToolNames = new Set();
+  const WRITE_TOOLS = new Set(['write_file', 'create_directory', 'copy_file', 'move_file', 'download_file']);
+  const recordChangedFile = (rawPath) => {
+    try {
+      if (!rawPath || typeof rawPath !== 'string') return;
+      const abs = path.isAbsolute(rawPath) ? rawPath : path.resolve(workdir || process.cwd(), rawPath);
+      if (changedFiles.has(abs)) return;
+      let rel = abs;
+      if (workdir) {
+        const base = path.resolve(workdir);
+        if (abs === base || abs.startsWith(base + path.sep)) rel = abs.slice(base.length + 1) || path.basename(abs);
+      }
+      changedFiles.set(abs, rel.replace(/\\/g, '/'));
+    } catch (e) { /* 路径解析失败就不记，不影响任务 */ }
+  };
+
+  // 工具结果 → tool 消息内容。失败/被拒时附加 hint，把"换思路继续"落到代码层——
+  // 提示词规范只是兜底，模型每轮真正读到的是这条回灌的 tool 消息。
+  // 这正是"部分工具不可用时自己想办法，而不是一报错就结束"的机制保障。
+  const toolMsgContent = (r, denied) => {
+    if (r && r.success === false) {
+      return JSON.stringify({
+        ...r,
+        hint: denied
+          ? '用户拒绝了此操作：不要绕过用户意愿，改用更安全的方式达成目标；确有必要时向用户说明原因请求允许，然后继续任务。'
+          : '此工具调用失败不代表任务失败。请阅读 error 分析原因，然后换一种可行方式继续：修正参数重试、改用其他可用工具或方法、或把步骤拆细。不要因此终止任务，也不要编造已成功。'
+      });
+    }
+    return JSON.stringify(r);
+  };
 
   while (iteration < maxIterations) {
     if (chatCancelled) { emit('agent-done', { content: '(已停止)', iteration }); cleanup(); if (provider.type === 'ollama') unloadOllamaModel(provider); return { success: true, content: accumulatedContent, cancelled: true }; }
@@ -3083,20 +3971,14 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
       const outputReserve = provider.type === 'ollama' ? 0 : (tokens || 4096);
       const maxInputTokens = Math.max(512, ctxWindow - outputReserve - 512);
       let est = estimateMessagesTokens(fullMessages);
+      // 主进程不做静默 prune：压缩完全交给前端按 95% 阈值触发，
+      // 避免前端显示 22% 但主进程已经偷偷删了历史
       if (est > maxInputTokens) {
-        const removed = pruneHeadToolRounds(fullMessages, maxInputTokens);
-        if (removed > 0) {
-          console.log('[Agent] 上下文接近窗口上限：估算', est, 'tokens / 窗口', ctxWindow, '，已从头部精简', removed, '条工具轮次消息');
-          emit('agent-content', { text: '\n> 上下文接近模型窗口上限，已自动精简较早的工具调用记录，继续执行...', iteration });
-          est = estimateMessagesTokens(fullMessages);
-        }
-        if (est > maxInputTokens) {
-          console.log('[Agent] 上下文超出窗口上限：估算', est, 'tokens / 窗口', ctxWindow, '，停止本轮 Agent 执行');
-          emit('agent-done', { content: '上下文已超出模型窗口上限，无法继续执行。请新建会话或手动压缩上下文后重试。', iteration, error: true });
-          cleanup();
-          if (provider.type === 'ollama') unloadOllamaModel(provider);
-          return { success: false, error: '上下文超出模型窗口上限' };
-        }
+        console.log('[Agent] 上下文真超窗口：估算', est, 'tokens / 上限', maxInputTokens, '，停止执行');
+        emit('agent-done', { content: '上下文已超出模型窗口上限，无法继续执行。请新建会话或手动压缩上下文后重试。', iteration, error: true });
+        cleanup();
+        if (provider.type === 'ollama') unloadOllamaModel(provider);
+        return { success: false, error: '上下文超出模型窗口上限' };
       }
     }
 
@@ -3152,7 +4034,16 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
       // 手动执行一次"被识别出来的"工具调用：伪造 tool_calls 消息 → 执行 → 回灌结果
       const runExtractedTool = async (extracted, source) => {
         if (!extracted) return false;
-        if (!ensureToolEnabled(extracted.name)) return false;
+        if (!ensureToolEnabled(extracted.name)) {
+          // 提取到了但被权限/模式拦下 —— 与"根本没提取到"是两回事，必须分开记日志，
+          // 否则两者都表现为"方案A 无效"，排查时完全看不出卡在哪一环。
+          blockedToolName = extracted.name;
+          blockedToolReason = conversationMode ? 'conversation' : 'role';
+          console.log('[Agent-诊断] 恢复链路中断：已提取 ' + extracted.name + '（来源：' + source
+            + '）但被 ensureToolEnabled 拒绝（会话模式=' + conversationMode
+            + ' / 角色允许=' + roleTools.includes(extracted.name) + '）');
+          return false;
+        }
         fullMessages.pop(); // 移除刚 push 的 assistantMsg
         const fakeToolCallId = 'extracted_' + Date.now();
         // 关键：Ollama 的历史里 arguments 必须是对象（传字符串会导致下一次请求 400
@@ -3164,21 +4055,43 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
           tool_calls: [{ id: fakeToolCallId, type: 'function', function: { name: extracted.name, arguments: argsForHistory } }]
         });
         emit('agent-tool-exec', { tool: extracted.name, args: extracted.arguments, iteration });
-        emit('agent-content', { text: '\n> ' + source + '，正在执行 ' + extracted.name + '...', iteration });
+        emit('agent-content', { text: '\n> ' + source + '，正在执行 ' + toolLabelCN(extracted.name) + '...', iteration });
         let toolResult;
+        // 【询问用户】在恢复链路里同样直接等用户选择（不走 60s 工具超时）
+        if (extracted.name === 'ask_user') {
+          if (!canAskUser) {
+            toolResult = { success: true, answered: false, answer: '（当前环境无法向用户弹出选项，请按你判断的最佳方案继续执行，并在最终汇报里说明做法）' };
+          } else {
+            try { toolResult = await requestUserGuidance(extracted.arguments || {}, emit); }
+            catch (e) { toolResult = { success: false, error: e.message || '询问用户失败' }; }
+          }
+          emit('agent-tool-result', { tool: extracted.name, result: toolResult, iteration });
+          fullMessages.push({ role: 'tool', tool_call_id: fakeToolCallId, content: toolMsgContent(toolResult, false) });
+          return true;
+        }
         // 安全：走恢复链路执行的敏感工具（run_shell / write_file）同样要过用户确认，
         // 不能因为"是从文本里解析出来的"就绕过确认弹窗
         // 优化：用户显式勾选启用的风险工具（enabledRiskyTools）自动执行不弹窗，
         // 只有模型请求的未启用工具才需要确认
-        const isUserEnabledRiskyTool = enabledRiskyTools.includes(extracted.name);
+        const isUserEnabledRiskyTool = enabledRiskyTools.includes(extracted.name) || activeToolNames.includes(extracted.name);
         if (!autoAuthorize && !isUserEnabledRiskyTool && TOOLS_REQUIRE_CONFIRM.has(extracted.name)) {
-          const confirm = await requestToolConfirm(extracted.name, extracted.arguments, emit);
+          const confirm = await requestToolConfirm(extracted.name, extracted.arguments, emit, isUserEnabledRiskyTool);
           if (!confirm.allowed) {
             toolResult = { success: false, error: '用户拒绝执行' + (confirm.reason ? '（' + confirm.reason + '）' : '') };
             emit('agent-tool-result', { tool: extracted.name, result: toolResult, iteration, denied: true });
-            fullMessages.push({ role: 'tool', tool_call_id: fakeToolCallId, content: JSON.stringify(toolResult) });
+            fullMessages.push({ role: 'tool', tool_call_id: fakeToolCallId, content: toolMsgContent(toolResult, true) });
             return true;
           }
+        }
+        // 「先检查项目再动手」门禁：未检查项目就想写文件 → 拦截（与 function-call 路径同一判定）
+        if (shouldBlockWrite(extracted.name) && writeGateBlocks < WRITE_GATE_MAX) {
+          writeGateBlocks++;
+          console.log('[Agent] 写入门禁(文本恢复路径)：未检查项目，拦截 ' + extracted.name + '（第 ' + writeGateBlocks + ' 次）');
+          toolResult = writeGateResult(extracted.name);
+          emit('agent-content', { text: '\n> 还没检查过项目代码，先读相关文件再改（已拦截 ' + toolLabelCN(extracted.name) + '）', iteration });
+          fullMessages.push({ role: 'tool', tool_call_id: fakeToolCallId, content: toolMsgContent(toolResult, false) });
+          emit('agent-tool-result', { tool: extracted.name, result: toolResult, iteration, blocked: true });
+          return true;
         }
         try {
           const toolPromise = executeTool(extracted.name, extracted.arguments, workdir, convCtx);
@@ -3188,7 +4101,12 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
           toolResult = { success: false, error: toolErr.message || '工具执行失败' };
         }
         console.log('[Agent] 手动执行工具结果:', extracted.name, 'success=', toolResult.success, (toolResult.error || '').substring(0, 100));
-        fullMessages.push({ role: 'tool', tool_call_id: fakeToolCallId, content: JSON.stringify(toolResult) });
+        if (toolResult && toolResult.success && WRITE_TOOLS.has(extracted.name)) {
+          recordChangedFile((extracted.arguments || {}).path || (extracted.arguments || {}).source || (extracted.arguments || {}).dest);
+        }
+        // 读过一次项目代码 → 视为已"检查项目"（与下面 function-call 路径同一判定）
+        if (INSPECT_TOOLS.has(extracted.name)) projectInspected = true;
+        fullMessages.push({ role: 'tool', tool_call_id: fakeToolCallId, content: toolMsgContent(toolResult, false) });
         emit('agent-tool-result', { tool: extracted.name, result: toolResult, iteration });
         return true;
       };
@@ -3199,11 +4117,29 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
       if (extracted && await runExtractedTool(extracted, '从回答中识别到工具调用')) continue;
 
       // 方案A：模型只在思考里说要调用但没输出（"只说不做"）→ 从思考/用户问题里推断
-      const mentionedTools = activeToolNames.filter(name => reasoningText.includes(name));
+      // mentionedTools 用 ALL_TOOL_NAMES 而非 activeToolNames：
+      // 模型点名了某个"当前未启用"的工具时也要能进入恢复链路，
+      // 由 ensureToolEnabled 按角色范围决定是否放行，而不是在门禁这一步就被悄悄跳过。
+      const mentionedTools = ALL_TOOL_NAMES.filter(name => reasoningText.includes(name));
       const actionWords = ['搜索', '查找', '查询', '抓取', '写入', '执行', '调用', '下载', '打开', '计算', '列出', '复制', '移动', '创建', '读取', '检查', '获取'];
       const mentionedAction = actionWords.some(w => reasoningText.includes(w));
       const mentionedCallIntent = /调用|执行|使用|search|fetch|write|read|shell|tool/i.test(reasoningText);
-      let inferredTool = mentionedTools[0] || '';
+      // ⚠️ inferredTool 与 extractToolCallFromReasoning 必须用**同一套意图强度规则**选，
+      //   否则会出现"提示里说调 A、实际执行 B"的错位（两者都只用于拼重试示例/执行决策）。
+      //   这里取"意图分最高"的那个，而不是首个或最后一个出现的。
+      const scoredTools = mentionedTools
+        .map(name => ({ name, score: intentScoreOfToolMention(reasoningText, name) }))
+        .filter(t => t.score > 0)
+        .sort((a, b) => b.score - a.score);
+      // 诊断日志：这轮"只说不做"的完整判定链，之前这条链路静默失败过多次，必须可观测
+      console.log('[Agent-诊断] mentionedTools=' + JSON.stringify(mentionedTools)
+        + ' 意图分=' + JSON.stringify(scoredTools.map(t => t.name + ':' + t.score))
+        + ' mentionedAction=' + mentionedAction
+        + ' mentionedCallIntent=' + mentionedCallIntent
+        + ' realContent长度=' + String(realContent || '').length
+        + ' iteration=' + iteration
+        + ' 角色允许工具=' + JSON.stringify(roleTools));
+      let inferredTool = scoredTools.length ? scoredTools[0].name : '';
       if (!inferredTool) {
         if (/搜索|查找|查询|最新|资讯|百科/i.test(reasoningText) || /搜索|查找|查询|最新|资讯|百科/i.test(lastUserMsg)) inferredTool = 'web_search';
         else if (/抓取|网页|链接|url|http/i.test(reasoningText)) inferredTool = 'web_fetch';
@@ -3221,11 +4157,12 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
 
       if (shouldRetryNoToolCalls) {
         let inferred = null;
-        // 优先从思考里提取模型自己拟好的关键词（通常更精准，如 “影视飓风官网”）
-        if (inferredTool === 'web_search') {
-          inferred = extractToolCallFromReasoning(reasoningText, lastUserMsg);
-          if (inferred) console.log('[Agent] 从思考中提取到工具调用:', inferred.name, JSON.stringify(inferred.arguments).substring(0, 200));
-        }
+        // 通用提取：优先命中"模型点名了某个无必填参数的工具"（如 ensure_clone_desktop），
+        // 其次才是 web_search / web_fetch 的关键词/URL 提取。
+        inferred = extractToolCallFromReasoning(reasoningText, lastUserMsg, ALL_TOOLS);
+        if (inferred) console.log('[Agent] 从思考中提取到工具调用:', inferred.name, JSON.stringify(inferred.arguments).substring(0, 200));
+        else console.log('[Agent-诊断] 方案A 未能从思考中提取到任何可执行工具（思考长度=' + reasoningText.length
+          + '，无必填参数的工具全都没被"意图句"点名命中）');
         // 兜底：拿用户原始问题当搜索词（这一步过去因为 lastUserMsg 取错而一直失效）
         if (!inferred && inferredTool === 'web_search' && lastUserMsg && lastUserMsg.length >= 2) {
           // 只去掉首尾的客套词，保留核心关键词（过度清洗会把"影视飓风的官网"洗成"影视飓风出来"）
@@ -3240,14 +4177,22 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
           console.log('[Agent] 直接用用户问题构造 web_search：', lastUserMsg.substring(0, 100), '→', searchQuery);
         }
         if (!inferred && inferredTool !== 'web_search') {
-          inferred = extractToolCallFromReasoning(reasoningText, lastUserMsg);
+          inferred = extractToolCallFromReasoning(reasoningText, lastUserMsg, ALL_TOOLS);
           if (inferred) console.log('[Agent] 从思考中提取到工具调用:', inferred.name, JSON.stringify(inferred.arguments).substring(0, 200));
         }
         if (inferred && await runExtractedTool(inferred, '从思考中识别到工具调用')) continue;
       }
 
       // 方案B：仍拿不到可执行的调用 → 退回到重试（关闭思考模式 + 强制要求输出 tool_calls）
-      if (shouldRetryNoToolCalls) {
+      // ⚠️ 前提是"模型点名的工具确实在当前可用列表里"。若它被权限拦下（角色没放开 / 会话模式），
+      //    还把工具名硬塞进"唯一正确的响应格式"里，模型只会回一个空响应 ——
+      //    用户看到的就是"既没启动、也没回答"。这种情况不重试，改由下面的明确提示收尾。
+      const canForceTool = activeToolNames.includes(inferredTool);
+      if (shouldRetryNoToolCalls && !canForceTool) {
+        console.log('[Agent] 推断工具 ' + inferredTool + ' 不在当前可用范围（' + activeToolNames.length
+          + ' 个工具中），跳过 tool_calls 重试，将由明确提示收尾');
+      }
+      if (shouldRetryNoToolCalls && canForceTool) {
         hasRetriedNoToolCalls = true;
         console.log('[Agent] 检测到模型"只说不做"：推断工具=' + inferredTool + ' content=' + contentText.length + '字符 reasoning=' + reasoningText.length + '字符，自动重试一次');
         fullMessages.pop();
@@ -3273,9 +4218,27 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
         continue;
       }
 
+      // 模型点名了工具、但被权限拦下（且它没能给出可用回答）→ 直接给出"该去哪放开"的说明收尾。
+      // 这条分支就是"用户说打开桌面分身，结果既没启动、回答还是驴唇不对马嘴"的收口点。
+      if (blockedToolName && noUsableAnswer) {
+        const blockedHint = buildBlockedToolHint(blockedToolName, blockedToolReason);
+        console.log('[Agent] 工具被权限拦下（' + blockedToolName + '），改用明确提示收尾');
+        emit('agent-content', { text: '\n\n> ' + blockedHint, iteration });
+        emit('agent-done', { content: blockedHint, iteration, usage: result.usage });
+        cleanup();
+        if (provider.type === 'ollama') unloadOllamaModel(provider);
+        return { success: true, content: blockedHint, iterations: iteration, empty: true };
+      }
+
       // 边界情况：有思考过程但没有正文也没有工具调用（模型"想了但没做"）
       // 注意：callProviderAPIWithTools 已尝试从 thinking 末尾兜底提取回答到 result.content
       if (!result.content || !result.content.trim()) {
+        // 自动重试一次：长工具循环后模型偶发返回空内容，重发请求通常能拿到正文
+        if (!emptyRetryUsed) {
+          emptyRetryUsed = true;
+          console.log('[Agent] 模型返回空内容，自动重试一次（iteration=' + iteration + '）');
+          continue;
+        }
         const noToolHint = activeTools.length === 0
           ? '当前没有任何可用工具（设置里的「启用工具」为空），请在对话设置中至少启用 web_search 等工具后重试。'
           : '';
@@ -3329,16 +4292,108 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
           continue;
         }
       }
-      emit('agent-done', { content: result.content, iteration, usage: result.usage });
+      // ---- 「先检查项目再解析需求」门禁 ----
+      // 选了项目、但模型还没读过任何项目代码就想给最终答案 → 退回一轮，要求先检查项目。
+      // 只退回一次（projectInspectNudged），避免模型 stubborn 死循环；第二次仍不检查就放行。
+      // 「好的/谢谢」这类极短回复不触发（>25 字才算实质回答），避免无意义读文件。
+      // ⚠️ 闲聊/寒暄（"你好"、"谢谢"）即使回复超 25 字也不触发门禁——那不是项目任务，没必要读代码。
+      //    判定复用开头的 skipThinkForChat（含上下文感知：对话已在进行中就不判闲聊）。
+      if (skipThinkForChat && workdir && !projectInspected && !projectInspectNudged) {
+        console.log('[Agent] 门禁跳过：闲聊/寒暄，不强制检查项目代码');
+      }
+      if (workdir && !projectInspected && !projectInspectNudged && (result.content || '').trim().length > 25 && !skipThinkForChat) {
+        projectInspectNudged = true;
+        console.log('[Agent] 门禁：本轮尚未检查项目代码，要求模型先检查再作答（iteration=' + iteration + '）');
+        emit('agent-content', { text: '\n> 尚未检查项目代码，先检查相关文件再回答...', iteration });
+        // 把已说出口的答案补成 assistant 消息，保持对话结构（避免连续两条 user）
+        fullMessages.push({ role: 'assistant', content: result.content || '（继续）' });
+        fullMessages.push({
+          role: 'user',
+          content: '【检查项目】在给出最终回答前，你还没有读过本项目的任何代码。请先用工具检查项目，把用户的问题对应到真实文件上：\n' +
+            '1) 用 file_search / directory_list 定位与问题相关的文件；\n' +
+            '2) 用 read_file 读关键文件，确认现状与调用链；\n' +
+            '3) 再基于你实际看到的代码，解析用户需求并回答。\n' +
+            '不要只凭项目摘要凭空猜测。如果确实与代码无关（如纯概念问题），明确说明理由后再回答。'
+        });
+        continue;
+      }
+      // 收尾：AI 自己总结"做了什么/成果如何"后写入项目记忆与 changes/，不再存聊天原文
+      try {
+        await finalizeRunRecord({
+          workdir,
+          provider,
+          userQuestion: getLastUserMessage(messages),
+          finalAnswer: result.content,
+          files: Array.from(changedFiles.values())
+        });
+      } catch (e) {
+        console.warn('[Agent] 收尾记录失败(忽略):', e.message);
+      }
+      emit('agent-done', { content: result.content, iteration, usage: result.usage, changedFiles: Array.from(changedFiles.values()) });
+      // 记录一条「近期动向」：用户最近在做什么、用了哪些工具（供 AI 进化训练与个性化）
+      recordEvolution({
+        mode: 'agent',
+        user: getLastUserMessage(messages),
+        project: workdir || '',
+        tools: Array.from(usedToolNames),
+        summary: (result.content || '').slice(0, 300)
+      });
       cleanup();
       if (provider.type === 'ollama') unloadOllamaModel(provider);
-      return { success: true, content: result.content, iterations: iteration };
+      // reasoning 随返回值带回渲染端，作为思考过程持久化的兜底
+      return { success: true, content: result.content, reasoning: result.reasoning, iterations: iteration, changedFiles: Array.from(changedFiles.values()) };
     }
 
     toolExecutedLastIteration = false;
+    // ★ 工具前的「为什么做这一步」：思考模式下模型常把「下一步要做什么」写进 reasoning、正文留空。
+    // 直接执行工具的话，用户只能看到折叠的「思考结束」+工具卡片，看不到理由。这里从本轮思考末尾
+    // 提炼一句自然语言说明，作为正文在首个工具执行前补发，让「思考到哪、正文写到哪」。
+    let nextStepNotice = '';
+    if (result.toolCalls && result.toolCalls.length && !(result.content || '').trim() && result.reasoning) {
+      nextStepNotice = extractNextStepNotice(result.reasoning, activeToolNames);
+    }
     // 执行工具调用
+    // ── 保守并行：同一批 tool_calls 里 >=2 个只读工具时，预执行并行跑 executeTool ──
+    // 只读工具无副作用（read_file / directory_list / file_search / web_search / web_fetch / check_url / get_system_info），
+    // 并行跑省 IO 等待（文档 3.2 PASTE 思路）。写类/确认类/ask_user/MCP 仍串行，避免顺序错乱。
+    const READ_ONLY_PARALLEL = new Set(['read_file', 'directory_list', 'file_search', 'web_search', 'web_fetch', 'check_url', 'get_system_info']);
+    const preExecResults = new Map(); // tc.id -> { fnArgs, toolResult }
+    if (result.toolCalls && result.toolCalls.length >= 2) {
+      const roCalls = result.toolCalls.filter(tc => {
+        const name = (tc.function?.name || '').trim();
+        if (!READ_ONLY_PARALLEL.has(name)) return false;
+        if (mcpToolNames.includes(name)) return false; // MCP 不并行
+        if (!ALL_TOOL_NAMES.includes(name)) return false;
+        return true;
+      });
+      if (roCalls.length >= 2) {
+        console.log('[Agent] 并行预执行只读工具(' + roCalls.length + '):', roCalls.map(tc => tc.function.name).join(','));
+        await Promise.all(roCalls.map(async (tc) => {
+          const name = tc.function.name.trim();
+          let fnArgs = {};
+          try {
+            fnArgs = typeof tc.function.arguments === 'object' && tc.function.arguments
+              ? tc.function.arguments
+              : (typeof tc.function.arguments === 'string' && tc.function.arguments.trim()
+                ? JSON.parse(tc.function.arguments) : {});
+          } catch (e) { fnArgs = {}; }
+          try {
+            const toolResult = await Promise.race([
+              executeTool(name, fnArgs, workdir, convCtx),
+              new Promise(resolve => setTimeout(() => resolve({
+                success: false, error: '工具执行超时（60秒），已自动终止。'
+              }), 60000))
+            ]);
+            preExecResults.set(tc.id, { fnArgs, toolResult });
+          } catch (toolErr) {
+            preExecResults.set(tc.id, { fnArgs, toolResult: { success: false, error: '工具执行异常: ' + (toolErr.message || String(toolErr)) } });
+          }
+        }));
+      }
+    }
     for (const tc of result.toolCalls) {
       const fnName = (tc.function?.name || '').trim();
+      if (fnName) usedToolNames.add(fnName);
       // 工具名校验：必须是已注册的工具，避免模型输出多个工具名拼接等异常。
       // 已注册但未启用的工具按模型请求自动放行，避免"模型想用、列表里没有"直接失败。
       if (fnName && ALL_TOOL_NAMES.includes(fnName) && !activeToolNames.includes(fnName)) ensureToolEnabled(fnName);
@@ -3348,12 +4403,15 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
         fullMessages.push({
           role: 'tool',
           tool_call_id: tc.id,
-          content: JSON.stringify({ success: false, error: '未知工具: ' + fnName + '，可用工具: ' + validToolNames.join(', ') })
+          // 脱敏：不再回显 'fnName + 可用工具全列表'（那会把整套内部函数名发给模型并可能显示在工具结果里）
+          content: toolMsgContent({ success: false, error: '未知工具「' + toolLabelCN(fnName) + '」，它不在当前可用工具列表中，请换用其它方式完成。' }, false)
         });
         continue;
       }
       // 本轮动过待办清单 → 收尾时要对账（见下面"待办收尾对账"）
       if (fnName === 'todo_write' || fnName === 'todo_update') todoTouched = true;
+      // 读过一次项目代码 → 视为已"检查项目"
+      if (INSPECT_TOOLS.has(fnName)) projectInspected = true;
       let fnArgs = {};
       const rawArgs = tc.function?.arguments;
       if (rawArgs && typeof rawArgs === 'object') {
@@ -3377,52 +4435,106 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
             emit('agent-tool-result', { tool: fnName, result: { success: false, error: '工具参数解析失败: ' + rawArgs.substring(0,200) }, iteration });
           }
         }
-    toolExecutedLastIteration = true;
-    continue; // 工具执行完毕，回到循环让模型根据结果决定下一步
+        // ⚠️ 此处曾有一句错位的 toolExecutedLastIteration=true + continue（2026-10-02 修复）：
+        // 它写在"字符串参数解析"分支内部，导致 OpenAI 格式（绝大多数云端模型）的工具调用
+        // 解析完参数就被 continue 跳过、从不执行也不回灌结果 → 模型拿不到工具结果，
+        // 反复重试或 400，最终"部分工具无法使用→错误导致结束"。已删除。
       }
       if (tc._argsIncomplete) {
         // 参数被截断/修复过：必须让用户知道，风险工具一律重新确认，避免拿残缺参数执行写文件/跑命令
         console.log('[Agent] 警告: 工具参数不完整（已尽力修复）:', fnName, JSON.stringify(fnArgs).substring(0, 120));
-        emit('agent-content', { text: '\n> 模型输出被截断，' + fnName + ' 的参数不完整（已自动补全），请核对后再执行。', iteration });
+        emit('agent-content', { text: '\n> 模型输出被截断，' + toolLabelCN(fnName) + ' 的参数不完整（已自动补全），请核对后再执行。', iteration });
       }
       console.log('[Agent] 工具调用:', fnName, '参数:', JSON.stringify(fnArgs).substring(0, 200));
 
+      // 「先检查项目再动手」门禁：未检查项目就想写文件 → 拦截（最多 2 次后放行，避免死循环）
+      if (shouldBlockWrite(fnName) && writeGateBlocks < WRITE_GATE_MAX) {
+        writeGateBlocks++;
+        console.log('[Agent] 写入门禁：未检查项目，拦截 ' + fnName + '（第 ' + writeGateBlocks + ' 次）');
+        const gateResult = writeGateResult(fnName);
+        emit('agent-content', { text: '\n> 还没检查过项目代码，先读相关文件再改（已拦截 ' + toolLabelCN(fnName) + '）', iteration });
+        emit('agent-tool-result', { tool: fnName, result: gateResult, iteration, blocked: true });
+        fullMessages.push({ role: 'tool', tool_call_id: tc.id, content: toolMsgContent(gateResult, false) });
+        continue;
+      }
+      if (shouldBlockWrite(fnName)) {
+        // 已被拦截多次仍不检查 → 放行但明确警告，让它知道违反了流程
+        console.log('[Agent] 写入门禁：已拦截 ' + writeGateBlocks + ' 次仍坚持写，放行并警告（iteration=' + iteration + '）');
+        emit('agent-content', { text: '\n> 警告：你还没检查项目代码就要改文件，本次已放行，但很可能改错地方。', iteration });
+      }
+
+      if (nextStepNotice) {
+        emit('agent-content', { text: nextStepNotice, iteration });
+        nextStepNotice = '';
+      }
       emit('agent-tool-exec', { tool: fnName, args: fnArgs, iteration });
 
       // 需要用户确认的工具
       let toolResult;
-      // 优化：用户显式勾选启用的风险工具自动执行不弹窗；但参数被截断过时必须重新确认
-        const isUserEnabledRiskyTool2 = enabledRiskyTools.includes(fnName);
-        const needConfirm = TOOLS_REQUIRE_CONFIRM.has(fnName)
-          && ((!autoAuthorize && !isUserEnabledRiskyTool2) || tc._argsIncomplete);
-        if (needConfirm) {
-        const confirm = await requestToolConfirm(fnName, fnArgs, emit);
+      // 优化：用户显式勾选启用的风险工具自动执行不弹窗——包括参数被截断的情况。
+      // 用户已勾选即表达信任，参数即便不完整也按自动补全后的值放行执行，
+      // 不再强制弹窗核对（避免"写文件内容一长就弹窗、点慢了还失败"）。
+      const isUserEnabledRiskyTool2 = enabledRiskyTools.includes(fnName) || activeToolNames.includes(fnName);
+      // MCP 工具**一律弹窗**，不受"用户勾选过就免确认"的优化影响：
+      // 外部 server 的工具用户没直接经手，参数也可能超出预期（如 openapi 导入的任意 API）。
+      const isMcpTool = mcpToolNames.includes(fnName);
+      const needConfirm = isMcpTool
+        ? _mcp.needConfirm(fnName)
+        : (TOOLS_REQUIRE_CONFIRM.has(fnName)
+          && (!autoAuthorize && !isUserEnabledRiskyTool2));
+      if (needConfirm) {
+        const confirm = await requestToolConfirm(fnName, fnArgs, emit, isUserEnabledRiskyTool2);
         if (!confirm.allowed) {
           toolResult = { success: false, error: '用户拒绝执行' + (confirm.reason ? '（' + confirm.reason + '）' : '') };
           emit('agent-tool-result', { tool: fnName, result: toolResult, iteration, denied: true });
           fullMessages.push({
             role: 'tool',
             tool_call_id: tc.id,
-            content: JSON.stringify(toolResult)
+            content: toolMsgContent(toolResult, true)
           });
           continue;
         }
       }
 
-      // 为工具执行添加超时保护（最长60秒），避免工具挂起导致整个对话卡死
-      const toolTimeoutMs = 60000;
+      // 【询问用户】特殊工具：不走 60s 工具超时，直接在聊天里等用户点选/自定义输入（上限 10 分钟）。
+      // 仅在支持交互的主窗口等待；桌宠等无选项卡 UI 的环境按模型最佳判断继续，避免干等卡死。
+      if (fnName === 'ask_user') {
+        let askResult;
+        if (!canAskUser) {
+          askResult = { success: true, answered: false, answer: '（当前环境无法向用户弹出选项，请按你判断的最佳方案继续执行，并在最终汇报里说明做法）' };
+        } else {
+          try { askResult = await requestUserGuidance(fnArgs, emit); }
+          catch (e) { askResult = { success: false, error: e.message || '询问用户失败' }; }
+        }
+        emit('agent-tool-result', { tool: fnName, result: askResult, iteration });
+        fullMessages.push({ role: 'tool', tool_call_id: tc.id, content: toolMsgContent(askResult, false) });
+        continue;
+      }
+
+      // 为工具执行添加超时保护，避免工具挂起导致整个对话卡死。
+      // 桌面分身类工具首次启动要建 RDP 子会话（DesktopSession.start 自带 75s 兜底），给 120s；
+      // 其余工具保持 60s，既防挂死又不至于让普通工具卡太久。
+      const toolTimeoutMs = CLONE_DESKTOP_TOOLS.has(fnName) ? 120000 : (mcpToolNames.includes(fnName) ? 150000 : 60000);
       const toolStartTime = Date.now();
       // 心跳：每5秒推送一次工具执行状态，避免前端显示"暂停"
       const heartbeatInterval = setInterval(() => {
         emit('agent-tool-progress', { tool: fnName, elapsed: Date.now() - toolStartTime, iteration });
       }, 5000);
-      
+
+      // 并行预执行命中：直接用缓存结果，不再重新跑 executeTool
+      const preHit = preExecResults.get(tc.id);
+      if (preHit) {
+        clearInterval(heartbeatInterval); // 工具已跑完，心跳不需要了
+        toolResult = preHit.toolResult;
+        if (preHit.fnArgs && Object.keys(preHit.fnArgs).length) fnArgs = preHit.fnArgs;
+        console.log('[Agent] 命中并行预执行缓存:', fnName);
+      } else {
       try {
         toolResult = await Promise.race([
           executeTool(fnName, fnArgs, workdir, convCtx),
-          new Promise(resolve => setTimeout(() => resolve({ 
-            success: false, 
-            error: `工具执行超时（${toolTimeoutMs/1000}秒），已自动终止。请检查命令是否需要交互输入、网络连接或文件权限。` 
+          new Promise(resolve => setTimeout(() => resolve({
+            success: false,
+            error: `工具执行超时（${toolTimeoutMs/1000}秒），已自动终止。请检查命令是否需要交互输入、网络连接或文件权限。`
           }), toolTimeoutMs))
         ]);
       } catch (toolErr) {
@@ -3430,21 +4542,61 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
       } finally {
         clearInterval(heartbeatInterval);
       }
+      }
       
       const toolDuration = Date.now() - toolStartTime;
       console.log('[Agent] 工具执行完成:', fnName, '耗时:', toolDuration + 'ms', '成功:', toolResult.success);
+      if (toolResult && toolResult.success && WRITE_TOOLS.has(fnName)) {
+        recordChangedFile(fnArgs.path || fnArgs.source || fnArgs.dest);
+      }
       emit('agent-tool-result', { tool: fnName, result: toolResult, iteration, duration: toolDuration });
 
-      // 工具结果加入消息
+      // ── 结果校验 → 压缩 → 反思：工具结果进上下文之前的三道处理 ──
+      // 顺序：先硬校验（格式/脱敏/截断），再压缩（长文本瘦身），最后软反思（质量自检警告）
+      const isMcpCall = mcpToolNames.includes(fnName);
+      // 1. 结果校验器：格式清洗 + 敏感信息脱敏 + 超长截断
+      const validation = _resultValidator.validate(fnName, toolResult, { isMcp: isMcpCall });
+      toolResult = validation.result;
+      // 2. 上下文压缩器：长文本自动瘦身（行级去重 + 智能截断）
+      if (toolResult && typeof toolResult.content === 'string') {
+        const compressed = _contextCompressor.compress(toolResult.content, { toolName: fnName });
+        if (compressed.compressed) {
+          toolResult.content = compressed.text;
+        }
+      }
+      // 3. 反思器：结果质量自检，发现可疑之处附加警告
+      const reflection = _reflector.reflect(fnName, toolResult, fnArgs);
+      if (reflection.flagged) {
+        toolResult = reflection.modifiedResult;
+      }
+
+      // 工具结果加入消息（失败时附"换思路继续"提示，避免模型一遇错就放弃）
       fullMessages.push({
         role: 'tool',
         tool_call_id: tc.id,
-        content: JSON.stringify(toolResult)
+        content: toolMsgContent(toolResult, false)
       });
     }
+    // 本轮处理过工具调用（执行/被拒/无效/解析失败都会回灌 tool 消息）→ 标记，
+    // 供下一轮"模型只输出中间步骤文本时注入继续提示"的逻辑使用
+    toolExecutedLastIteration = true;
   }
 
-  emit('agent-done', { content: '（已达到最大迭代次数，停止执行）', iteration });
+  // 收尾（中断也要留痕）：同样走"AI 总结 → 记忆/改动记录"，标注未完成
+  try {
+    await finalizeRunRecord({
+      workdir,
+      provider,
+      userQuestion: getLastUserMessage(messages),
+      finalAnswer: '达到最大迭代次数后停止，部分改动可能未最终完成。',
+      files: Array.from(changedFiles.values()),
+      interrupted: true,
+      title: '已达最大迭代次数（中断）'
+    });
+  } catch (e) {
+    console.warn('[Agent] 中断收尾记录失败(忽略):', e.message);
+  }
+  emit('agent-done', { content: '（已达到最大迭代次数，停止执行）', iteration, changedFiles: Array.from(changedFiles.values()) });
   cleanup();
   // 主动卸载 Ollama 模型，释放 GPU 显存
   if (provider.type === 'ollama') unloadOllamaModel(provider);
@@ -3577,6 +4729,38 @@ function normalizeToolCallArgs(tc, isOllama) {
   return 'broken';
 }
 
+// 判断 content 是否为有效的多模态内容数组（OpenAI 兼容格式）
+// 有效格式：[{ type: 'text', text: '...' }, { type: 'image_url', image_url: { url: 'data:...' } }]
+function isValidMultimodalContent(content) {
+  if (!Array.isArray(content) || content.length === 0) return false;
+  return content.every(part => {
+    if (!part || typeof part !== 'object') return false;
+    const t = part.type;
+    if (t === 'text') return typeof part.text === 'string';
+    if (t === 'image_url') return part.image_url && typeof part.image_url.url === 'string';
+    if (t === 'input_image') return typeof part.url === 'string' || (part.image && typeof part.image === 'string');
+    return false; // 未知类型不认为是有效多模态
+  });
+}
+
+// 消毒多模态 content 数组：清理 text 中的非法字符，校验 image_url 格式
+function sanitizeMultimodalContent(content) {
+  return content.map(part => {
+    if (part.type === 'text' && typeof part.text === 'string') {
+      return {
+        type: 'text',
+        text: part.text
+          .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, '')
+          .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
+          .replace(/\u0000/g, '')
+      };
+    }
+    if (part.type === 'image_url' && part.image_url) {
+      return { type: 'image_url', image_url: { url: String(part.image_url.url) } };
+    }
+    return part;
+  });
+}
 // 发送前消毒 messages：半截工具参数、孤立代理项、缺失/孤立的工具响应都会让上游 400
 function sanitizeOutgoingMessages(messages, isOllama) {
   if (!Array.isArray(messages)) return messages;
@@ -3588,7 +4772,12 @@ function sanitizeOutgoingMessages(messages, isOllama) {
     const msg = { ...m };
     // content 必须是字符串（对象会被上游拒绝）；顺带剔除孤立代理项与 NUL
     if (msg.content !== null && msg.content !== undefined && typeof msg.content !== 'string') {
-      msg.content = typeof msg.content === 'object' ? JSON.stringify(msg.content) : String(msg.content);
+      if (isValidMultimodalContent(msg.content)) {
+        msg.content = sanitizeMultimodalContent(msg.content);
+        notes.push('multimodal-content-kept');
+      } else {
+        msg.content = typeof msg.content === 'object' ? JSON.stringify(msg.content) : String(msg.content);
+      }
     }
     if (typeof msg.content === 'string') {
       const before = msg.content;
@@ -3743,6 +4932,11 @@ function isLocalEndpoint(provider) {
  * - llama.cpp / vLLM / SGLang：`chat_template_kwargs.enable_thinking = true`（llama-server 服务 Qwen3 时默认 false）
  * - 阿里云百炼 / DashScope 兼容模式：顶层 `enable_thinking = true`
  * 只对「本地端点」或「已知混合思考模型」下发，避免给严格的云端接口塞未知字段导致 400。
+ *
+ * ⚠️ thinkMode=false 时**必须显式下发关闭**（本地端点），不能只是"不发参数"：
+ *   llama.cpp / vLLM 的 Qwen3 模板在部分部署下默认开启思考，
+ *   "不发"≠"关闭" → 模型照样思考 → 思考吃掉 max_tokens → 正文输出为空（回答异常）。
+ *   云端接口对未知字段敏感，仍然只在确认支持时下发 false。
  */
 // 哪些提供商支持 stream_options.include_usage（不支持的发了会 400）
 function supportsStreamOptions(provider) {
@@ -3753,17 +4947,34 @@ function supportsStreamOptions(provider) {
 }
 
 function thinkingParams(provider, thinkMode) {
-  if (!thinkMode) return {};
   const local = isLocalEndpoint(provider);
+  const t = String(provider?.type || '').toLowerCase();
+  const model = String(provider?.model || '');
+
+  if (!thinkMode) {
+    // 关闭思考：只对「本地端点」和「已确认支持该字段的云端」显式下发 false。
+    // 少了这一步，本地混合思考模型仍会思考 → 思考吃满 max_tokens → 正文为空。
+    if (local) return { chat_template_kwargs: { enable_thinking: false } };
+    if (t === 'dashscope') return { enable_thinking: false };
+    if (/glm-(4\.5|4\.6|[5-9]|z[0-9])/i.test(model) || /zhipu|chatglm/i.test(String(provider?.name || ''))) {
+      return { thinking: { type: 'disabled' } };
+    }
+    return {};
+  }
+
   if (local) {
     // llama.cpp / llama-server：只通过 chat_template_kwargs 控制思考，顶层字段会被忽略或报错
     return { chat_template_kwargs: { enable_thinking: true } };
   }
   // 云端：只有百炼 DashScope 明确支持顶层 enable_thinking；
   // 其他厂商（火山引擎、腾讯混元、百度等）发了会 400，即使模型名匹配也不发
-  const t = String(provider?.type || '').toLowerCase();
-  if (t === 'dashscope' && HYBRID_THINK_MODEL_RE.test(String(provider?.model || ''))) {
+  if (t === 'dashscope' && HYBRID_THINK_MODEL_RE.test(model)) {
     return { enable_thinking: true };
+  }
+  // 智谱 GLM 混合思考模型（glm-4.5/4.6/5/z1 系列）：顶层 thinking.type 参数，
+  // 不发则模型不输出 reasoning_content，前端思考面板全程空白（只能等执行完看总结）
+  if (/glm-(4\.5|4\.6|[5-9]|z[0-9])/i.test(model) || /zhipu|chatglm/i.test(String(provider?.name || ''))) {
+    return { thinking: { type: 'enabled' } };
   }
   return {};
 }
@@ -3778,7 +4989,10 @@ function callProviderAPIWithTools(provider, messages, temperature, maxTokens, to
     const isHttps = url.protocol === 'https:';
     const client = isHttps ? https : http;
 
-    const useTools = tools && tools.length > 0 ? tools : AGENT_TOOLS;
+    // tools 为空时兜底成"内置 + 已启用的 MCP 工具"。
+    // 这里**同步读缓存**而不是 await getAllTools()：本函数是 Promise 构造器不是 async，
+    // 且调用方（agentChat）已在进请求前刷新过缓存，不会拿到过期数据。
+    const useTools = tools && tools.length > 0 ? tools : AGENT_TOOLS.concat(_mcpToolCache.tools);
     console.log('[Agent] callProviderAPIWithTools - isOllama:', isOllama, 'thinkMode:', thinkMode, 'tools count:', useTools.length);
     // Ollama：显式设置足够大的上下文窗口（默认仅2048~4096，装不下19个工具定义+系统提示词，会导致模型看不到工具而不调用）
     // keep_alive: 0 表示响应完成后立即从GPU显存卸载模型，避免长时间占用导致卡顿
@@ -4084,6 +5298,8 @@ function fetchProviderModels(provider) {
   });
 }
 
+// 注：分身预览窗打开器已随预览功能一并移除（原 setClonePreviewOpen）。
+
 module.exports = {
   init, getStatus,
   getAgentTools,
@@ -4096,18 +5312,21 @@ module.exports = {
   listCloudProviders, addCloudProvider, addProviderByPreset, updateCloudProvider, deleteCloudProvider, fetchProviderModels,
   chat, streamChat, agentChat, cancelChat, cancelAgentChat,
   resolveToolConfirm,
+  resolveUserGuidance,
   getAgentRoles, saveAgentRole, deleteAgentRole,
   releaseGPUMemory,
   // 长期记忆（供渲染层的「AI 记忆」面板读写）
+  // opts.workdir 用来切作用域：设置页要看「当前项目」的记忆时传 workdir，不传=全局
   initMemory: (filePath) => MemoryStore.init(filePath),
   memory: {
-    list: (opts) => MemoryStore.list(opts).map(memoryBrief),
-    search: (query, limit) => MemoryStore.search(query, limit).map(memoryBrief),
+    list: (opts) => { MemoryStore.ensureScope(MemoryStore.scopePathForWorkdir(opts && opts.workdir)); return MemoryStore.list(opts).map(memoryBrief); },
+    search: (query, limit, workdir) => { MemoryStore.ensureScope(MemoryStore.scopePathForWorkdir(workdir)); return MemoryStore.search(query, limit).map(memoryBrief); },
     save: (payload) => MemoryStore.add(payload),
     update: (id, patch) => MemoryStore.update(id, patch),
     remove: (id) => MemoryStore.remove(id),
-    clear: () => MemoryStore.clear(),
-    stats: () => MemoryStore.stats()
+    clear: (workdir) => { MemoryStore.ensureScope(MemoryStore.scopePathForWorkdir(workdir)); return MemoryStore.clear(); },
+    stats: () => MemoryStore.stats(),
+    scopeFor: (workdir) => MemoryStore.scopePathForWorkdir(workdir)
   },
   // 待办事项（供渲染层读取/清理当前会话的清单）
   initTodo: (filePath) => TodoStore.init(filePath),
@@ -4121,7 +5340,58 @@ module.exports = {
   // 上下文护栏（纯函数，供单测）
   estimateMessagesTokens,
   pruneHeadToolRounds,
-  // 仅给测试脚本用（scripts/test-vision-analyze.js 等）：把内部实现暴露出来做端到端校验
+  // ===== 多模态 / 多 Agent 协同模块复用的内部接口 =====
+  _internal: {
+    // 个性化（设置 → 功能设置）：供单测与将来「预览提示词」功能使用
+    getPersonalization,
+    buildPersonalizationBlock,
+    recordEvolution,
+    REPLY_STYLES,
+    callProviderAPI,
+    callProviderAPIWithTools,
+    executeTool,
+    findProvider,
+    getAgentRoleById,
+    getAgentRoles,
+    prepareLocalProvider,
+    sanitizeOutgoingMessages,
+    isValidMultimodalContent,
+    sanitizeMultimodalContent,
+    normalizeToolCallArgs,
+    estimateMessagesTokens,
+    pruneHeadToolRounds,
+    finalizeMemoryIfNeeded,
+    getMemoryWrittenThisRound: () => memoryWrittenThisRound,
+    setMemoryWrittenThisRound: (v) => { memoryWrittenThisRound = !!v; },
+    setTestTarget,
+    resolveTestTargetTitle,
+    getTestTarget: () => currentTestTarget,
+    clearTestTarget: () => { currentTestTarget = null; },
+    AGENT_TOOLS,
+    RISKY_TOOLS,
+    TOOLS_ALWAYS_ALLOWED,
+    TOOL_DEPENDENCIES,
+    resolveRoleTools,
+    extractToolCallFromReasoning,
+    buildBlockedToolHint,
+    AGENT_SYSTEM_PROMPT,
+    VISION_MODEL_HINTS,
+    redactText: _agentCfgRaw.redactText,
+    renderExamples: _agentCfgRaw.renderExamples,
+    transform: _agentCfg.transform,
+    // MCP（外部工具服务器）：供 IPC 层调用与测试
+    mcpStart: async (id) => _mcpInvalidate(await _mcp.startServer(id)),
+    mcpStop: async (id) => _mcpInvalidate(await _mcp.stopServer(id)),
+    mcpRestart: async (id) => _mcpInvalidate(await _mcp.restartServer(id)),
+    mcpStatus: _mcp.status,
+    mcpSetEnabled: (ids) => _mcpInvalidate(_mcp.setEnabled(ids)),
+    mcpStopAll: async () => _mcpInvalidate(await _mcp.stopAll()),
+    mcpHealthCheck: _mcp.healthCheck,
+    mcpManager: _mcp,
+    getAllTools,
+    invalidateMcpTools
+  },
+    // 仅给测试脚本用（scripts/test-vision-analyze.js 等）：把内部实现暴露出来做端到端校验
   __test: {
     analyzeImageWithVision,
     parseVisionVerdict,
@@ -4131,6 +5401,15 @@ module.exports = {
     AGENT_TOOLS,
     RISKY_TOOLS,
     TOOLS_ALWAYS_ALLOWED,
-    AGENT_SYSTEM_PROMPT
+    TOOL_DEPENDENCIES,
+    resolveRoleTools,
+    extractToolCallFromReasoning,
+    buildBlockedToolHint,
+    AGENT_SYSTEM_PROMPT,
+    redactText: _agentCfgRaw.redactText,
+    renderExamples: _agentCfgRaw.renderExamples,
+    transform: _agentCfg.transform,
+    getAllTools,
+    mcpManager: _mcp
   }
 };

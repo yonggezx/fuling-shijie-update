@@ -49,6 +49,19 @@ const defaultConfig = {
     enabled: true,
     effect: 'normal'
   },
+  // ===== 个性化 + 记忆（设置 → 功能设置）=====
+  // systemPrompt 从原来的 ai.systemPrompt 搬过来（用户 2026-10-03 要求挪到功能设置里统一管理）
+  personalization: {
+    memoryEnabled: true,        // 长期记忆总开关：关掉后 AI 不再读写长期记忆
+    autoRecordHabits: true,     // 自动记录近期习惯与动向
+    evolveEnabled: true,        // 把这些记录用于「AI 进化训练」（生成习惯画像并注入提示词）
+    replyStyle: 'default',      // 回复风格：default/concise/detailed/warm/professional/humorous
+    personaName: '灵汐',
+    personaRole: '桌面 AI 助手',
+    personaDesc: '',            // 人格描述：性格、边界、说话习惯
+    customInstructions: '',     // 自定义指令：给 AI 回答制定规则
+    systemPrompt: ''            // AI 系统提示词（留空 = 用应用内置默认）
+  },
   disclaimer: {
     accepted: false,
     acceptedAt: null
@@ -64,6 +77,19 @@ function init(filePath) {
     try {
       const data = fs.readFileSync(filePath, 'utf-8');
       config = mergeDeep(defaultConfig, JSON.parse(data));
+      // 品牌迁移：旧版 AI龙虾 -> 浮灵饰界灵汐
+      if (config.ai && config.ai.systemPrompt && config.ai.systemPrompt.includes('AI龙虾')) {
+        config.ai.systemPrompt = defaultConfig.ai.systemPrompt;
+        save();
+        console.log('[ConfigMigration] 系统提示词已从 AI龙虾 迁移为 浮灵饰界灵汐');
+      }
+      // 2026-10-03：系统提示词从「AI 配置」页搬到「设置 → 功能设置 → 个性化」，这里做一次性迁移
+      if (config.personalization && !config.personalization.systemPrompt && config.ai && config.ai.systemPrompt) {
+        config.personalization.systemPrompt = config.ai.systemPrompt;
+        config.ai.systemPrompt = defaultConfig.ai.systemPrompt; // 旧字段复位，避免两处各存一份
+        save();
+        console.log('[ConfigMigration] 系统提示词已迁移到「功能 → 个性化」');
+      }
     } catch (e) {
       config = JSON.parse(JSON.stringify(defaultConfig));
     }

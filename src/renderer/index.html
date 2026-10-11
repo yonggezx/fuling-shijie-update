@@ -19,10 +19,10 @@
   /* 弹窗 */
   .account-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 10000; }
   .account-modal.show { display: flex; align-items: center; justify-content: center; }
-  .account-modal-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,.7); backdrop-filter: blur(8px); }
-  .account-modal-box { position: relative; width: 420px; max-width: 90vw; max-height: 85vh; background: var(--bg-primary); border-radius: 12px; border: 1px solid var(--border-color); box-shadow: 0 20px 60px rgba(0,0,0,.5); overflow: hidden; animation: account-modal-in .3s ease; }
+  .account-modal-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: var(--glass-overlay-bg); backdrop-filter: blur(var(--glass-overlay-blur)) saturate(130%); -webkit-backdrop-filter: blur(var(--glass-overlay-blur)) saturate(130%); }
+  .account-modal-box { position: relative; width: 420px; max-width: 90vw; max-height: 85vh; background: var(--glass-panel-bg); backdrop-filter: blur(var(--glass-panel-blur)) saturate(160%); -webkit-backdrop-filter: blur(var(--glass-panel-blur)) saturate(160%); border-radius: 12px; border: 1px solid var(--glass-panel-border); box-shadow: var(--glass-panel-shadow); color: var(--glass-text); overflow: hidden; animation: account-modal-in .3s ease; }
   @keyframes account-modal-in { from { opacity: 0; transform: translateY(20px) scale(.95); } to { opacity: 1; transform: translateY(0) scale(1); } }
-  .account-modal-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border-color); background: var(--bg-primary); }
+  .account-modal-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--glass-head-border); background: transparent; }
   .account-modal-header h3 { margin: 0; font-size: 16px; color: var(--text-primary); font-weight: 600; }
   .account-modal-close { width: 32px; height: 32px; border: none; background: transparent; font-size: 22px; color: var(--text-secondary); cursor: pointer; border-radius: 50%; transition: all .2s; display: flex; align-items: center; justify-content: center; }
   .account-modal-close:hover { background: var(--bg-hover); color: var(--text-primary); }
@@ -106,20 +106,6 @@
   .toast-warning { background: #ff9800; }
   .toast-info { background: var(--bg-secondary); }
 
-  /* AI 配置登录锁定遮罩 */
-  .ai-config-lock { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: var(--bg-primary); display: flex; align-items: center; justify-content: center; z-index: 100; backdrop-filter: blur(4px); }
-  .ai-config-lock.hidden { display: none; }
-  .lock-content { text-align: center; padding: 40px; }
-  .lock-icon { width: 64px; height: 64px; margin: 0 auto 20px; color: var(--text-secondary); opacity: .6; }
-  .lock-icon svg { width: 100%; height: 100%; }
-  .lock-content h3 { font-size: 20px; color: var(--text-primary); margin-bottom: 8px; }
-  .lock-content p { font-size: 14px; color: var(--text-secondary); margin-bottom: 24px; }
-  .lock-login-btn { padding: 10px 28px; background: linear-gradient(135deg, var(--accent) 0%, var(--accent-hover) 100%); color: #fff; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; transition: all .2s; box-shadow: 0 2px 8px var(--accent-glow); }
-  .lock-login-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px var(--accent-glow); }
-
-  /* 侧边栏锁定图标 */
-  .nav-lock-icon { display: inline-flex; align-items: center; margin-left: auto; opacity: .5; }
-  .nav-lock-icon svg { width: 14px; height: 14px; }
 
   /* 专属 SVG 图标定义 */
   .lobster-icon { display: inline-flex; align-items: center; justify-content: center; }
@@ -144,7 +130,54 @@
 
 
 
-  </style>
+
+  /* ==================== 多模态自动识别 & 多Agent自动触发 ==================== */
+  .image-preview-bar {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    background: var(--bg-secondary); border-radius: 8px; margin-bottom: 8px;
+    border: 1px solid var(--border-color);
+  }
+  .image-preview-list { display: flex; gap: 8px; flex-wrap: wrap; flex: 1; }
+  .image-preview-item {
+    position: relative; width: 56px; height: 56px; border-radius: 6px; overflow: hidden;
+    border: 1px solid var(--border-color); cursor: pointer; transition: transform .15s;
+  }
+  .image-preview-item:hover { transform: scale(1.05); }
+  .image-preview-item img { width: 100%; height: 100%; object-fit: cover; }
+  .image-preview-remove {
+    position: absolute; top: 2px; right: 2px; width: 18px; height: 18px;
+    background: rgba(0,0,0,.7); color: #fff; border: none; border-radius: 50%;
+    font-size: 12px; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  }
+  .image-clear-btn {
+    width: 24px; height: 24px; border: none; background: var(--bg-hover); color: var(--text-secondary);
+    border-radius: 50%; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  }
+  .image-clear-btn:hover { background: #ef4444; color: #fff; }
+
+  /* 多Agent自动触发提示条 */
+  .ma-pending-bar {
+    display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+    background: rgba(79,70,229,0.08); border: 1px solid rgba(79,70,229,0.3);
+    border-radius: 8px; margin-bottom: 8px; font-size: 13px;
+    animation: ma-slide-in .25s ease;
+  }
+  @keyframes ma-slide-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+  .ma-pending-text { flex: 1; color: var(--text-primary); }
+  .ma-pending-btn {
+    padding: 4px 12px; border: none; border-radius: 6px; font-size: 12px;
+    cursor: pointer; font-weight: 500; transition: all .15s;
+  }
+  .ma-pending-yes { background: #4f46e5; color: #fff; }
+  .ma-pending-yes:hover { background: #4338ca; }
+  .ma-pending-no { background: var(--bg-hover); color: var(--text-secondary); }
+  .ma-pending-no:hover { background: var(--bg-active); color: var(--text-primary); }
+
+  /* 聊天消息中的图片 */  /* 聊天消息中的图片 */
+  .chat-message-image {
+    max-width: 300px; max-height: 200px; border-radius: 8px; margin-top: 6px;
+    border: 1px solid var(--border-color); cursor: pointer;
+  }  </style>
 </head>
 <body>
   <div id="app">
@@ -229,7 +262,7 @@
           <div class="nav-item" data-tab="ai-config">
             <span class="nav-icon" id="nav-icon-ai"></span>
             <span class="nav-label" data-i18n="nav.aiConfig">AI 配置</span>
-            <span class="nav-lock-icon" id="nav-lock-ai"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg></span>
+
           </div>
           <div class="nav-item" data-tab="settings">
             <span class="nav-icon" id="nav-icon-settings"></span>
@@ -261,27 +294,50 @@
           <div class="panel-header">
             <h2 data-i18n="chat.title">AI 对话</h2>
             <div class="panel-actions">
-              <button class="btn btn-sm btn-primary" id="btn-new-chat">
+              <button class="btn btn-sm btn-primary" id="btn-new-chat" title="新建对话">
                 <span class="el-icon" data-icon="plus"></span>
-                <span data-i18n="chat.newChat">新建对话</span>
               </button>
               <span id="chat-provider-icon" class="provider-icon-badge" style="display:none;width:24px;height:24px;align-items:center;justify-content:center;margin-right:4px;color:var(--text-secondary);"></span>
               <select id="chat-provider" class="select-sm">
                 <option value="" data-i18n="chat.selectProvider">选择AI模型...</option>
               </select>
-              <select id="conversation-select" class="select-sm">
-                <option value="" data-i18n="chat.selectConv">选择历史会话...</option>
-              </select>
+              <button class="btn btn-sm" id="btn-history-conv" data-i18n-title="chat.selectConv" title="历史会话" style="display:none;">
+                <span class="el-icon" data-icon="history"></span>
+              </button>
               <button class="btn btn-sm btn-danger" id="btn-delete-conv" data-i18n-title="chat.deleteConv" title="删除会话" style="display:none;">
                 <span class="el-icon" data-icon="delete"></span>
               </button>
-              <button class="btn btn-sm" id="btn-clear-chat">
+              <button class="btn btn-sm" id="btn-clear-chat" title="清空对话">
                 <span class="el-icon" data-icon="clear"></span>
-                <span data-i18n="btn.clear">清空</span>
               </button>
-            </div>
+<button class="btn btn-sm" id="btn-open-security-center" title="安全中心">
+            <span class="el-icon" data-icon="shield"></span>
+          </button>
+          <button class="btn btn-sm" id="btn-open-connectors" title="连通器">
+            <span class="el-icon" data-icon="connector"></span>
+          </button>
+          <button class="btn btn-sm" id="btn-open-marketplace" title="智能商城">
+            <img class="store-icon store-icon-light" src="../../assets/icons/store-icon-light.png" alt="智能商城">
+            <img class="store-icon store-icon-dark" src="../../assets/icons/store-icon-dark.png" alt="智能商城">
+          </button>
+        </div>
           </div>
           <div class="chat-container">
+            <!-- 左侧项目会话栏（仅聊天页内，不影响应用主导航） -->
+            <div class="chat-top">
+            <div class="conv-panel-toggles">
+              <button class="conv-panel-toggle conv-panel-left" id="conv-toggle-left" title="项目与对话">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 3v18"/></svg>
+              </button>
+              <button class="conv-panel-toggle conv-panel-right" id="conv-toggle-right" title="对话产物与资源">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M15 3v18"/></svg>
+              </button>
+            </div>
+            <div class="conv-sidebar" id="conv-sidebar">
+              <div class="conv-sidebar-list" id="conv-sidebar-list">
+                <!-- 按项目分组的会话树，由 JS 动态渲染 -->
+              </div>
+            </div>
             <div class="chat-main">
               <div class="chat-messages" id="chat-messages"></div>
               <div id="agent-settings-panel" class="agent-settings-panel" style="display:none;">
@@ -327,8 +383,8 @@
   <div id="agent-memory-list" class="agent-memory-list"></div>
 </div>
 <!-- 工具执行确认弹窗 -->
-<div id="tool-confirm-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
-  <div style="background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:12px;padding:20px;width:400px;max-width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.3);">
+<div id="tool-confirm-modal" class="glass-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:1000;align-items:center;justify-content:center;">
+  <div class="glass-modal" style="padding:20px;width:400px;max-width:90%;">
     <div style="font-size:16px;font-weight:600;color:var(--text-primary);margin-bottom:12px;" data-i18n="chat.toolConfirmTitle">⚠ 工具执行确认</div>
     <div style="font-size:13px;color:var(--text-secondary);margin-bottom:8px;">AI 请求执行以下操作：</div>
     <div id="confirm-tool-name" style="font-size:14px;font-weight:600;color:var(--primary);margin-bottom:8px;"></div>
@@ -340,8 +396,8 @@
   </div>
 </div>
 <!-- 角色编辑弹窗 -->
-<div id="role-edit-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1001;align-items:center;justify-content:center;">
-  <div style="background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:12px;padding:20px;width:500px;max-width:90%;max-height:85vh;overflow-y:auto;">
+<div id="role-edit-modal" class="glass-overlay" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:1001;align-items:center;justify-content:center;">
+  <div class="glass-modal" style="padding:20px;width:500px;max-width:90%;max-height:85vh;overflow-y:auto;">
     <div style="font-size:16px;font-weight:600;color:var(--text-primary);margin-bottom:16px;" id="role-edit-title">编辑角色</div>
     <div style="margin-bottom:12px;">
       <label style="display:block;font-size:13px;color:var(--text-secondary);margin-bottom:4px;">角色名称</label>
@@ -369,8 +425,8 @@
         <input type="number" id="role-edit-temp" min="0" max="2" step="0.1" value="0.7" style="width:80px;padding:6px;background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);font-size:13px;">
       </div>
       <div>
-        <label style="display:block;font-size:13px;color:var(--text-secondary);margin-bottom:4px;">最大迭代</label>
-        <input type="number" id="role-edit-iter" min="1" max="20" step="1" value="8" style="width:80px;padding:6px;background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);font-size:13px;">
+        <label style="display:block;font-size:13px;color:var(--text-secondary);margin-bottom:4px;">最大迭代（0=不限）</label>
+        <input type="number" id="role-edit-iter" min="0" max="999" step="1" value="0" style="width:80px;padding:6px;background:var(--bg-tertiary);border:1px solid var(--border-color);border-radius:6px;color:var(--text-primary);font-size:13px;">
       </div>
     </div>
     <div style="display:flex;gap:10px;justify-content:flex-end;">
@@ -379,6 +435,13 @@
     </div>
   </div>
 </div>
+            </div>
+            <div class="conv-assets-sidebar" id="conv-assets-sidebar">
+              <div class="conv-assets-list" id="conv-assets-list">
+                <!-- 对话产物与项目文件资源，由 JS 动态渲染 -->
+              </div>
+            </div>
+            </div>
 <div class="chat-input-area">
                 <div class="input-tools">
                   <button class="tool-btn" id="btn-voice" data-i18n-title="chat.voiceInput" title="语音输入">
@@ -393,6 +456,7 @@
                   <button class="tool-btn" id="btn-agent-settings" data-i18n-title="chat.agentSettings" title="Agent设置">
                     <span class="el-icon" data-icon="wrench"></span>
                   </button>
+                  
                   <!-- 工作/聊天模式切换：工作模式带工具和项目目录，聊天模式纯对话 -->
                   <button class="tool-btn mode-toggle-btn" id="btn-mode-toggle" title="切换模式：工作模式（带工具/项目）或聊天模式（纯对话）">
                     <span class="el-icon" data-icon="chat" id="mode-toggle-icon"></span>
@@ -422,7 +486,7 @@
                     <button class="btn btn-sm" id="btn-manage-roles" data-i18n="chat.manageRoles">管理角色</button>
                   </div>
                 </div>
-                <div class="chat-input-wrapper">
+                                <div class="chat-input-wrapper">
                   <textarea id="chat-input" data-i18n-placeholder="chat.placeholder" placeholder="输入消息给灵汐... (Enter发送, Shift+Enter换行)" rows="1"></textarea>
                   <button class="send-btn" id="btn-send">
                     <span class="el-icon" data-icon="send"></span>
@@ -431,7 +495,6 @@
                 </div>
                 
             </div>
-          </div>
         </section>
 
         <!-- 模型管理 -->
@@ -628,17 +691,6 @@
           <div class="panel-header">
             <h2 data-i18n="aiConfig.title">AI 模型配置</h2>
           </div>
-          <!-- 登录锁定遮罩 -->
-          <div class="ai-config-lock" id="ai-config-lock">
-            <div class="lock-content">
-              <div class="lock-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
-              </div>
-              <h3>需要登录</h3>
-              <p data-i18n="aiConfig.loginRequired">大模型相关功能需要登录后才能使用</p>
-              <button class="lock-login-btn" id="ai-lock-login-btn">立即登录</button>
-            </div>
-          </div>
           <div class="ai-config-container">
             <!-- 快速添加预设 -->
             <div class="config-section">
@@ -743,14 +795,16 @@
             <div class="config-section">
               <div class="section-header">
                 <h3 id="local-models-title" data-i18n="aiConfig.localModels">本地AI模型文件</h3>
-                <button class="btn btn-sm btn-primary" id="btn-add-local-model">
-                  <span class="el-icon" data-icon="modelAdd"></span>
-                  <span data-i18n="btn.add">添加</span>
-                </button>
-                <button class="btn btn-sm btn-secondary" id="btn-add-local-model-dir" style="margin-left:6px;">
-                  <span class="el-icon" data-icon="folderOpen"></span>
-                  <span>导入目录</span>
-                </button>
+                <div class="section-actions">
+                  <button class="btn btn-sm btn-primary" id="btn-add-local-model">
+                    <span class="el-icon" data-icon="modelAdd"></span>
+                    <span data-i18n="btn.add">添加</span>
+                  </button>
+                  <button class="btn btn-sm btn-secondary" id="btn-add-local-model-dir" style="margin-left:6px;">
+                    <span class="el-icon" data-icon="folderOpen"></span>
+                    <span>导入目录</span>
+                  </button>
+                </div>
               </div>
               <div class="config-list" id="local-models-list">
                 <div class="empty-state-sm">
@@ -821,8 +875,11 @@
                   </div>
                 </div>
                 <div class="param-item full-width">
-                  <label data-i18n="aiConfig.systemPrompt" data-info-tip="systemPrompt">系统提示词</label>
-                  <textarea id="system-prompt" rows="3" data-i18n-placeholder="aiConfig.systemPromptPlaceholder" placeholder="设置AI的角色和行为..."></textarea>
+                  <label data-i18n="aiConfig.systemPrompt">系统提示词</label>
+                  <div class="moved-hint">
+                    <span data-i18n="aiConfig.systemPromptMoved">系统提示词已移到「系统设置 → 功能 → 个性化」统一管理</span>
+                    <button class="btn btn-sm" id="goto-personalization" type="button" data-i18n="aiConfig.gotoPersonalization">去设置</button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -908,8 +965,33 @@
               </div>
             </div>
 
+            <div class="settings-section" id="settings-features">
+              <h3><span class="el-icon section-ic" data-icon="ai"></span><span data-i18n="settings.features">功能</span></h3>
+              <div class="setting-entry" id="open-memory-detail" role="button" tabindex="0" aria-haspopup="dialog">
+                <div class="entry-text">
+                  <div class="entry-title" data-i18n="settings.memoryEntryTitle">记忆</div>
+                  <div class="entry-hint" data-i18n="settings.memoryEntryHint">长期记忆、AI 进化、近期动向</div>
+                </div>
+                <span class="entry-arrow"><svg viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor"><path d="M340.2 833.4c-12.5 12.5-32.7 12.5-45.2 0-12.5-12.5-12.5-32.7 0-45.2L626.9 512 294.9 235.8c-12.5-12.5-12.5-32.7 0-45.2s32.7-12.5 45.2 0l369.6 352.3c12.5 12.5 12.5 32.7 0 45.2L340.2 833.4z"/></svg></span>
+              </div>
+              <div class="setting-entry" id="open-personalization-detail" role="button" tabindex="0" aria-haspopup="dialog">
+                <div class="entry-text">
+                  <div class="entry-title" data-i18n="settings.personalizationEntryTitle">个性化</div>
+                  <div class="entry-hint" data-i18n="settings.personalizationEntryHint">回复风格、身份人格、系统提示词</div>
+                </div>
+                <span class="entry-arrow"><svg viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor"><path d="M340.2 833.4c-12.5 12.5-32.7 12.5-45.2 0-12.5-12.5-12.5-32.7 0-45.2L626.9 512 294.9 235.8c-12.5-12.5-12.5-32.7 0-45.2s32.7-12.5 45.2 0l369.6 352.3c12.5 12.5 12.5 32.7 0 45.2L340.2 833.4z"/></svg></span>
+              </div>
+              <div class="setting-entry" id="open-archived-detail" role="button" tabindex="0" aria-haspopup="dialog">
+                <div class="entry-text">
+                  <div class="entry-title" data-i18n="settings.archivedEntryTitle">已归档内容</div>
+                  <div class="entry-hint" data-i18n="settings.archivedEntryHint">归档的会话可在此还原或删除</div>
+                </div>
+                <span class="entry-arrow"><svg viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor"><path d="M340.2 833.4c-12.5 12.5-32.7 12.5-45.2 0-12.5-12.5-12.5-32.7 0-45.2L626.9 512 294.9 235.8c-12.5-12.5-12.5-32.7 0-45.2s32.7-12.5 45.2 0l369.6 352.3c12.5 12.5 12.5 32.7 0 45.2L340.2 833.4z"/></svg></span>
+              </div>
+            </div>
+
             <div class="settings-section">
-              <h3><span class="el-icon section-ic" data-icon="warning"></span><span data-i18n="settings.security">安全设置</span></h3>
+              <h3><span class="el-icon section-ic" data-icon="warning"></span><span data-i18n="settings.security">安全</span></h3>
               <div class="setting-item switch">
                 <label data-i18n="settings.confirmDanger">危险操作确认</label>
                 <label class="switch-toggle">
@@ -936,6 +1018,13 @@
                   <button class="theme-btn" data-theme="auto" data-i18n="settings.themeAuto">跟随系统</button>
                 </div>
               </div>
+              <div class="setting-item switch">
+                <label title="开启后主窗口使用系统 Acrylic 磨砂（真实模糊桌面壁纸），关闭则恢复不透明">毛玻璃透明效果</label>
+                <label class="switch-toggle">
+                  <input type="checkbox" id="transparency-effect">
+                  <span class="switch-slider"></span>
+                </label>
+              </div>
               <div class="setting-item">
                 <label data-i18n="settings.language">语言</label>
                 <select id="language">
@@ -960,7 +1049,7 @@
             </div>
 
             <div class="settings-section">
-              <h3><span class="el-icon section-ic" data-icon="upload"></span><span data-i18n="settings.updateSettings">更新设置</span></h3>
+              <h3><span class="el-icon section-ic" data-icon="upload"></span><span data-i18n="settings.updateSettings">更新</span></h3>
               <div class="setting-item">
                 <label data-i18n="settings.autoCheckUpdate">启动时自动检查更新</label>
                 <label class="switch-toggle">
@@ -1090,6 +1179,9 @@
               <h1 data-i18n="app.name">浮灵饰界</h1>
               <p class="about-version" id="about-version">版本 -</p>
               <p class="about-desc" data-i18n="about.desc">智能桌面宠物助手 · 让AI陪伴你的每一天</p>
+              <button class="about-developers-btn" id="btn-open-developers" type="button" title="开发人员">
+                <span class="el-icon" data-icon="developers"></span>开发人员
+              </button>
             </div>
 
             <!-- 更新公告（融入关于页面） -->
@@ -1140,6 +1232,16 @@
               </div>
             </div>
 
+            <!-- 免责声明（底部，链接+弹窗形式） -->
+            <div class="disclaimer-footer">
+              <div class="disclaimer-link-row">
+                <label class="agree-label">
+                  <input type="checkbox" id="agree-disclaimer">
+                  <span data-i18n="about.disclaimerAgree">我已阅读并同意</span>
+                </label>
+                <a href="#" class="disclaimer-link" id="disclaimer-link" data-i18n="about.disclaimer">免责声明</a>
+              </div>
+            </div>
           </div>
         </section>
       </main>
@@ -1170,6 +1272,164 @@
         </div>
         <div class="modal-body" id="modal-body"></div>
         <div class="modal-footer" id="modal-footer"></div>
+      </div>
+    </div>
+
+    <!-- 记忆详情弹窗 -->
+    <div class="modal-overlay" id="memory-modal-overlay">
+      <div class="modal features-modal">
+        <div class="modal-header">
+          <h3 data-i18n="settings.memory">记忆</h3>
+          <button class="modal-close" id="memory-modal-close"><span class="el-icon" data-icon="close"></span></button>
+        </div>
+        <div class="modal-body" id="memory-modal-body">
+          <div class="settings-subgroup">
+            <div class="settings-subgroup-title" data-i18n="settings.memory">记忆</div>
+            <div class="setting-item switch">
+              <label>
+                <span data-i18n="settings.memoryEnabled">启用长期记忆</span>
+                <small data-i18n="settings.memoryEnabledHint">AI 会记住你的偏好、项目约定和踩过的坑（存于程序安全目录，跨项目共享）</small>
+              </label>
+              <label class="switch-toggle">
+                <input type="checkbox" id="memory-enabled" data-personalize="1" checked>
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+            <div class="setting-item switch">
+              <label>
+                <span data-i18n="settings.autoRecord">记录近期习惯与动向</span>
+                <small data-i18n="settings.autoRecordHint">每轮对话后自动记一条「你在做什么」，可在下面查看和删除</small>
+              </label>
+              <label class="switch-toggle">
+                <input type="checkbox" id="memory-auto-record" data-personalize="1" checked>
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+            <div class="setting-item switch">
+              <label>
+                <span data-i18n="settings.evolveEnabled">用于 AI 进化训练</span>
+                <small data-i18n="settings.evolveEnabledHint">把记录汇总成习惯画像并注入提示词，让 AI 越用越贴合你</small>
+              </label>
+              <label class="switch-toggle">
+                <input type="checkbox" id="memory-evolve" data-personalize="1" checked>
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+
+            <div class="setting-item column">
+              <label>
+                <span data-i18n="settings.memoryRecords">长期记忆记录</span>
+                <small id="memory-scope-hint" data-i18n="settings.memoryScopeHint">当前作用域：全局（存于程序安全目录，跨项目共享）</small>
+              </label>
+              <div class="memory-toolbar">
+                <input type="text" id="memory-search" data-i18n-placeholder="settings.memorySearch" placeholder="搜索记忆…">
+                <button class="btn btn-sm" id="memory-refresh" type="button" data-i18n="common.refresh">刷新</button>
+                <button class="btn btn-sm" id="memory-clear-all" type="button" data-i18n="settings.memoryClear">清空</button>
+              </div>
+              <div class="memory-list" id="memory-list">
+                <div class="memory-empty" data-i18n="settings.memoryLoading">加载中…</div>
+              </div>
+            </div>
+
+            <div class="setting-item column">
+              <label>
+                <span data-i18n="settings.evolutionProfile">AI 进化档案</span>
+                <small data-i18n="settings.evolutionHint">按天记录 + 自动汇总的习惯画像（存于用户数据目录，可直接编辑）</small>
+              </label>
+              <div class="memory-toolbar">
+                <button class="btn btn-sm" id="evolution-refresh" type="button" data-i18n="settings.evolutionBuild">生成画像</button>
+                <button class="btn btn-sm" id="evolution-clear" type="button" data-i18n="settings.evolutionClear">清空记录</button>
+                <span class="memory-stat" id="evolution-stats"></span>
+              </div>
+              <pre class="evolution-profile" id="evolution-profile"></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 个性化详情弹窗 -->
+    <div class="modal-overlay" id="personalization-modal-overlay">
+      <div class="modal features-modal">
+        <div class="modal-header">
+          <h3 data-i18n="settings.personalization">个性化</h3>
+          <button class="modal-close" id="personalization-modal-close"><span class="el-icon" data-icon="close"></span></button>
+        </div>
+        <div class="modal-body" id="personalization-modal-body">
+          <div class="settings-subgroup">
+            <div class="settings-subgroup-title" data-i18n="settings.personalization">个性化</div>
+            <div class="setting-item">
+              <label data-i18n="settings.replyStyle">回复风格</label>
+              <div class="style-selector" id="reply-style-selector">
+                <button class="style-btn active" type="button" data-style="default" data-i18n="settings.styleDefault">默认</button>
+                <button class="style-btn" type="button" data-style="concise" data-i18n="settings.styleConcise">简洁</button>
+                <button class="style-btn" type="button" data-style="detailed" data-i18n="settings.styleDetailed">细致</button>
+                <button class="style-btn" type="button" data-style="warm" data-i18n="settings.styleWarm">亲切</button>
+                <button class="style-btn" type="button" data-style="professional" data-i18n="settings.styleProfessional">专业</button>
+                <button class="style-btn" type="button" data-style="humorous" data-i18n="settings.styleHumorous">幽默</button>
+              </div>
+            </div>
+            <div class="setting-item">
+              <label data-i18n="settings.personaName">名字</label>
+              <input type="text" id="persona-name" class="settings-input" data-i18n-placeholder="settings.personaNamePh" placeholder="灵汐">
+            </div>
+            <div class="setting-item">
+              <label data-i18n="settings.personaRole">身份</label>
+              <input type="text" id="persona-role" class="settings-input" data-i18n-placeholder="settings.personaRolePh" placeholder="桌面 AI 助手">
+            </div>
+            <div class="setting-item column">
+              <label>
+                <span data-i18n="settings.personaDesc">人格设定</span>
+                <small data-i18n="settings.personaDescHint">性格、说话习惯、边界；留空则不额外约束</small>
+              </label>
+              <textarea id="persona-desc" class="settings-textarea text-hidden" rows="2" data-i18n-placeholder="settings.personaDescPh" placeholder="比如：说话简短直接，不写客套话；不确定就直说不确定。"></textarea>
+              <div class="small-text-row" id="persona-desc-row" data-field="persona-desc" role="button" tabindex="0" aria-haspopup="dialog">
+                <span class="small-text-preview" id="persona-desc-preview"></span>
+                <span class="small-text-arrow"><svg viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor"><path d="M340.2 833.4c-12.5 12.5-32.7 12.5-45.2 0-12.5-12.5-12.5-32.7 0-45.2L626.9 512 294.9 235.8c-12.5-12.5-12.5-32.7 0-45.2s32.7-12.5 45.2 0l369.6 352.3c12.5 12.5 12.5 32.7 0 45.2L340.2 833.4z"/></svg></span>
+              </div>
+            </div>
+            <div class="setting-item column">
+              <label>
+                <span data-i18n="settings.customInstructions">自定义指令</span>
+                <small data-i18n="settings.customInstructionsHint">给 AI 的回答定规则，优先级高于它的默认习惯</small>
+              </label>
+              <textarea id="custom-instructions" class="settings-textarea" rows="3" data-i18n-placeholder="settings.customInstructionsPh" placeholder="每条一行，例如：&#10;回答一律用中文&#10;改代码前必须先读相关文件&#10;不要在结尾问要不要继续"></textarea>
+              <div class="char-counter" id="custom-instructions-counter">0 字</div>
+            </div>
+            <div class="setting-item column">
+              <label>
+                <span data-i18n="settings.systemPrompt">AI 系统提示词</span>
+                <small data-i18n="settings.systemPromptHint">设定 AI 的角色与总体行为；留空使用应用内置默认</small>
+              </label>
+              <textarea id="personal-system-prompt" class="settings-textarea text-hidden" rows="5" data-i18n-placeholder="settings.systemPromptPh" placeholder="你是浮灵饰界的智能助手…"></textarea>
+              <div class="small-text-row" id="personal-system-prompt-row" data-field="personal-system-prompt" role="button" tabindex="0" aria-haspopup="dialog">
+                <span class="small-text-preview" id="personal-system-prompt-preview"></span>
+                <span class="small-text-arrow"><svg viewBox="0 0 1024 1024" width="14" height="14" fill="currentColor"><path d="M340.2 833.4c-12.5 12.5-32.7 12.5-45.2 0-12.5-12.5-12.5-32.7 0-45.2L626.9 512 294.9 235.8c-12.5-12.5-12.5-32.7 0-45.2s32.7-12.5 45.2 0l369.6 352.3c12.5 12.5 12.5 32.7 0 45.2L340.2 833.4z"/></svg></span>
+              </div>
+              <div class="memory-toolbar">
+                <button class="btn btn-sm" id="sysprompt-restore" type="button" data-i18n="settings.syspromptRestore">恢复默认</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 小文本点开编辑弹窗（人格设定 / AI 系统提示词，2026-10-03）-->
+    <div class="modal-overlay" id="small-text-editor-overlay">
+      <div class="modal small-text-editor">
+        <div class="modal-header">
+          <h3 id="small-text-editor-title" data-i18n="settings.personaDesc">人格设定</h3>
+          <button class="modal-close" id="small-text-editor-close" type="button"><span class="el-icon" data-icon="close"></span></button>
+        </div>
+        <div class="modal-body">
+          <textarea id="small-text-editor" class="settings-textarea" rows="8"></textarea>
+        </div>
+        <div class="modal-footer">
+          <span class="editor-counter" id="small-text-editor-counter">0 字</span>
+          <button class="btn btn-sm" id="small-text-editor-cancel" type="button" data-i18n="btn.cancel">取消</button>
+          <button class="btn btn-primary btn-sm" id="small-text-editor-save" type="button" data-i18n="models.save">保存</button>
+        </div>
       </div>
     </div>
 
@@ -1226,6 +1486,47 @@
       </div>
     </div>
 
+    <!-- 免责声明弹窗（初次使用） -->
+    <div class="modal-overlay disclaimer-modal-overlay" id="disclaimer-modal-overlay">
+      <div class="modal disclaimer-modal">
+        <div class="modal-header">
+          <h3><span class="el-icon" data-icon="warning" style="margin-right:8px;"></span><span data-i18n="about.disclaimer">免责声明</span></h3>
+        </div>
+        <div class="modal-body disclaimer-body">
+          <div class="legal-content">
+            <div class="legal-item">
+              <strong data-i18n="about.disclaimer1Title">1. 系统操作风险：</strong>
+              <span data-i18n="about.disclaimer1Body">本软件提供文件管理、命令执行、软件安装等系统级操作功能。用户需自行承担因操作失误、误删文件、执行危险命令等造成的一切后果。对系统重要路径的操作已添加提示，但最终操作决定权在用户。</span>
+            </div>
+            <div class="legal-item">
+              <strong data-i18n="about.disclaimer2Title">2. AI模型免责：</strong>
+              <span data-i18n="about.disclaimer2Body">本软件接入的AI模型（本地或云端）生成的内容不代表软件立场。用户在使用AI功能时需自行判断内容的准确性和合法性。本地模型的运行效果取决于用户硬件配置。</span>
+            </div>
+            <div class="legal-item">
+              <strong data-i18n="about.disclaimer3Title">3. 数据隐私：</strong>
+              <span data-i18n="about.disclaimer3Body">本地AI模型的对话数据完全在本地处理，不会上传至任何服务器。使用云端AI服务时，对话数据将发送至对应的API服务提供商。请仔细阅读各AI服务商的隐私政策。</span>
+            </div>
+            <div class="legal-item">
+              <strong data-i18n="about.disclaimer4Title">4. 模型版权：</strong>
+              <span data-i18n="about.disclaimer4Body">用户导入的 Live2D / MMD 模型需拥有合法使用权。软件不对用户导入的模型版权负责。请尊重原作者的知识产权。</span>
+            </div>
+            <div class="legal-item">
+              <strong data-i18n="about.disclaimer5Title">5. 使用规范：</strong>
+              <span data-i18n="about.disclaimer5Body">请勿使用本软件从事违法、违规或损害他人利益的活动。遵守所在地区的法律法规。合理使用系统操作功能，避免对系统造成不必要的损害。</span>
+            </div>
+          </div>
+          <div class="legal-agreement">
+            <label class="agree-label">
+              <input type="checkbox" id="disclaimer-agree">
+              <span data-i18n="about.agreeText">我已阅读并同意上述免责声明，愿意承担使用本软件的一切风险</span>
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-primary" id="disclaimer-confirm" disabled data-i18n="about.confirmStart">确认并开始使用</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="js/icons.js"></script>
@@ -1238,9 +1539,15 @@
   <script src="js/roleIcons.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="js/account.js"></script>
-  <script src="js/global-cursor.js"></script>
   <script src="js/custom-select.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/multimodal-ui.js"></script>
+<script src="js/security-ui.js"></script>
+<script src="js/brand-icons.js"></script>
+<script src="js/connector-ui.js"></script>
+<script src="js/marketplace-ui.js"></script>
+  <!-- 虚拟桌面微型弹窗（对话页右下角）：依赖 icons.js，必须在它之后加载 -->
+  <script src="js/virtual-desktop-panel.js"></script>
   <!-- ==================== 账号弹窗 ==================== -->
   
   <!-- 登录/注册弹窗 -->
@@ -1332,7 +1639,7 @@
         <div class="account-modal-message" id="account-modal-message-profile"></div>
         
         <div class="account-profile-card">
-          <div class="account-avatar" id="profile-avatar-display" title="点击上传头像" style="cursor:pointer;display:flex;align-items:center;justify-content:center;"><img src="../../assets/icons/logo.png" alt="avatar" style="width:32px;height:32px;border-radius:50%;"></div>
+          <div class="account-avatar" id="profile-avatar-display" title="点击上传头像" style="cursor:pointer;display:flex;align-items:center;justify-content:center;overflow:hidden;"><!-- 头像由 account.js 渲染（自定义头像或首字母默认头像） --></div>
           <div class="account-profile-info">
             <div class="account-profile-name" id="profile-name-display">用户</div>
             <div class="account-profile-email" id="profile-email-display">email@example.com</div>
@@ -1427,25 +1734,461 @@
       </div>
     </div>
   </div>
-  
 
+<!-- 历史会话下拉面板 -->
+<div id="history-conv-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:99999;">
+  <div id="history-conv-panel" style="position:absolute;background:var(--glass-panel-bg);backdrop-filter:blur(var(--glass-panel-blur)) saturate(160%);-webkit-backdrop-filter:blur(var(--glass-panel-blur)) saturate(160%);border:1px solid var(--border-color,#3a3a48);border-radius:10px;box-shadow:0 8px 32px rgba(0,0,0,0.4);width:280px;max-height:360px;display:flex;flex-direction:column;overflow:hidden;">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border-color,#3a3a48);">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span class="el-icon" style="color:var(--accent,#4f46e5);font-size:15px;" id="history-modal-icon"></span>
+        <span style="font-size:13px;font-weight:600;color:var(--text-primary,#fff);">历史会话</span>
+      </div>
+      <button id="history-modal-close" style="background:none;border:none;cursor:pointer;color:var(--text-secondary,#999);font-size:14px;padding:2px 6px;border-radius:4px;transition:all 0.15s;">✕</button>
+    </div>
+    <div id="history-conv-list" style="flex:1;overflow-y:auto;padding:6px;">
+      <!-- 会话列表由 JS 动态渲染 -->
+    </div>
+  </div>
+</div>
 
+<!-- 已归档内容弹窗 -->
+<div id="archived-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:99999;align-items:center;justify-content:center;background:rgba(0,0,0,0.45);">
+  <div style="background:var(--glass-panel-bg);backdrop-filter:blur(var(--glass-panel-blur)) saturate(160%);-webkit-backdrop-filter:blur(var(--glass-panel-blur)) saturate(160%);border:1px solid var(--border-color,#3a3a48);border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,0.4);width:520px;max-width:94%;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;">
+    <div class="modal-header">
+      <h3>已归档内容</h3>
+      <span class="modal-close" id="btn-archived-close">✕</span>
+    </div>
+    <div style="padding:2px 16px 6px;color:var(--text-secondary,#999);font-size:12px;">归档的会话可在此还原或永久删除，只有删除时记录才会真正移除。</div>
+    <div id="archived-list" style="flex:1;overflow-y:auto;padding:8px 16px 16px;">
+      <!-- 按项目分组的归档会话，由 JS 动态渲染 -->
+    </div>
+  </div>
+</div>
 
+<!-- 安全中心弹窗 -->
+<div class="security-modal-overlay" id="security-modal-overlay" style="display:none;">
+  <div class="security-modal" id="security-modal">
+    <div class="security-modal-header">
+      <div class="security-modal-title">
+        <span class="el-icon" data-icon="shield" style="margin-right:8px;"></span>
+        安全中心
+      </div>
+      <button class="security-modal-close" id="security-modal-close">&times;</button>
+    </div>
+    <div class="security-modal-body">
+              <!-- 安全状态概览 -->
+              <div class="sec-overview">
+                <div class="sec-overview-card">
+                  <div class="sec-overview-icon sec-icon-green">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                  </div>
+                  <div class="sec-overview-info">
+                    <span class="sec-overview-label">安全防护</span>
+                    <span class="sec-overview-value" id="sec-overview-status">运行中</span>
+                  </div>
+                </div>
+                <div class="sec-overview-stats">
+                  <div class="sec-stat-item">
+                    <span class="sec-stat-value" id="sec-backup-count-overview">0</span>
+                    <span class="sec-stat-label">备份</span>
+                  </div>
+                  <div class="sec-stat-item">
+                    <span class="sec-stat-value" id="sec-trash-count-overview">0</span>
+                    <span class="sec-stat-label">纸篓</span>
+                  </div>
+                  <div class="sec-stat-item">
+                    <span class="sec-stat-value" id="sec-audit-count-overview">0</span>
+                    <span class="sec-stat-label">日志</span>
+                  </div>
+                </div>
+              </div>
 
+              <!-- Tab 切换 -->
+              <div class="sec-tabs">
+                <button class="sec-tab active" data-tab="sandbox">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  沙箱安全
+                </button>
+                <button class="sec-tab" data-tab="data">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                  数据安全
+                </button>
+                <button class="sec-tab" data-tab="audit">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                  审计中心
+                </button>
+              </div>
 
+              <!-- 沙箱安全面板 -->
+              <div class="sec-panel" id="sec-panel-sandbox">
+                <div class="sec-subtitle">
+                  运行环境防护
+                  <span class="sec-help-icon" data-help="sandbox-env" title="查看说明">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r="1.2" fill="currentColor" stroke="none"/></svg>
+                  </span>
+                </div>
+                <div class="setting-item switch">
+                  <label>文件操作安全监控</label>
+                  <label class="switch-toggle"><input type="checkbox" id="sec-file-security"><span class="switch-slider"></span></label>
+                </div>
+                <div class="setting-item switch">
+                  <label>命令执行安全检测</label>
+                  <label class="switch-toggle"><input type="checkbox" id="sec-command-security"><span class="switch-slider"></span></label>
+                </div>
+                <div class="setting-item switch">
+                  <label>网络请求安全监控</label>
+                  <label class="switch-toggle"><input type="checkbox" id="sec-network-security"><span class="switch-slider"></span></label>
+                </div>
 
+                <div class="sec-subtitle">
+                  自动备份
+                  <span class="sec-help-icon" data-help="auto-backup" title="查看说明">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r="1.2" fill="currentColor" stroke="none"/></svg>
+                  </span>
+                </div>
+                <div class="setting-item switch">
+                  <label>启用自动备份</label>
+                  <label class="switch-toggle"><input type="checkbox" id="sec-auto-backup"><span class="switch-slider"></span></label>
+                </div>
+                <div class="setting-item">
+                  <label>备份最大占用 (MB)</label>
+                  <input type="number" id="sec-backup-size" min="100" max="5000" value="500" style="width:100px;">
+                </div>
+                <div class="setting-item">
+                  <label>备份间隔 (小时)</label>
+                  <input type="number" id="sec-backup-interval" min="1" max="168" value="24" style="width:100px;">
+                </div>
+                <div class="setting-item">
+                  <div class="section-actions" style="margin-left:auto;">
+                    <button class="btn btn-primary btn-sm" id="sec-btn-backup">立即备份</button>
+                    <span style="margin-left:8px;color:var(--text-muted);font-size:12px;align-self:center;">已有 <span id="sec-backup-count">0</span> 个备份</span>
+                  </div>
+                </div>
+                <div class="sec-list-container" id="sec-backup-list"><div class="sec-empty">暂无备份记录</div></div>
+              </div>
 
+              <!-- 数据安全面板 -->
+              <div class="sec-panel" id="sec-panel-data" style="display:none;">
+                <div class="sec-subtitle">
+                  删除保护（纸篓）
+                  <span class="sec-help-icon" data-help="trash-protect" title="查看说明">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r="1.2" fill="currentColor" stroke="none"/></svg>
+                  </span>
+                </div>
+                <div class="setting-item switch">
+                  <label>删除保护</label>
+                  <label class="switch-toggle"><input type="checkbox" id="sec-delete-protection"><span class="switch-slider"></span></label>
+                </div>
+                <div class="setting-item switch">
+                  <label>启用纸篓（删除的对话先放入纸篓）</label>
+                  <label class="switch-toggle"><input type="checkbox" id="sec-trash-enabled"><span class="switch-slider"></span></label>
+                </div>
+                <div class="setting-item">
+                  <label>纸篓自动清理 (天)</label>
+                  <input type="number" id="sec-trash-days" min="1" max="365" value="30" style="width:100px;">
+                </div>
+                <div class="setting-item">
+                  <div class="section-actions" style="margin-left:auto;">
+                    <button class="btn btn-default btn-sm" id="sec-btn-trash-refresh">刷新</button>
+                    <button class="btn btn-danger btn-sm" id="sec-btn-trash-clear" style="margin-left:6px;">清空纸篓</button>
+                    <span style="margin-left:8px;color:var(--text-muted);font-size:12px;align-self:center;">纸篓中有 <span id="sec-trash-count">0</span> 项</span>
+                  </div>
+                </div>
+                <div class="sec-list-container" id="sec-trash-list"><div class="sec-empty">纸篓为空</div></div>
 
+                <div class="sec-subtitle">
+                  传输安全（默认开启，不可关闭）
+                  <span class="sec-help-icon" data-help="transport-sec" title="查看说明">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r="1.2" fill="currentColor" stroke="none"/></svg>
+                  </span>
+                </div>
+                <div class="setting-item switch">
+                  <label>安全网关</label>
+                  <label class="switch-toggle"><input type="checkbox" checked disabled><span class="switch-slider"></span></label>
+                </div>
+                <div class="setting-item switch">
+                  <label>传输加密 (AES-256)</label>
+                  <label class="switch-toggle"><input type="checkbox" checked disabled><span class="switch-slider"></span></label>
+                </div>
 
+                <div class="sec-subtitle">
+                  敏感信息保护
+                  <span class="sec-help-icon" data-help="sensitive-protect" title="查看说明">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r="1.2" fill="currentColor" stroke="none"/></svg>
+                  </span>
+                </div>
+                <div class="setting-item switch">
+                  <label>敏感信息检测（密码/密钥/账号等）</label>
+                  <label class="switch-toggle"><input type="checkbox" id="sec-sensitive-detection"><span class="switch-slider"></span></label>
+                </div>
+                <div class="setting-item switch">
+                  <label>检测到敏感信息自动加密</label>
+                  <label class="switch-toggle"><input type="checkbox" id="sec-sensitive-encrypt"><span class="switch-slider"></span></label>
+                </div>
+                <div class="setting-item">
+                  <button class="btn btn-default btn-sm" id="sec-btn-scan-test">测试敏感信息检测</button>
+                </div>
+                <div class="sec-list-container" id="sec-scan-result"></div>
+              </div>
 
+              <!-- 审计中心面板 -->
+              <div class="sec-panel" id="sec-panel-audit" style="display:none;">
+                <div class="sec-subtitle">
+                  审计设置
+                  <span class="sec-help-icon" data-help="audit-setting" title="查看说明">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><circle cx="12" cy="17" r="1.2" fill="currentColor" stroke="none"/></svg>
+                  </span>
+                </div>
+                <div class="setting-item switch">
+                  <label>启用审计日志</label>
+                  <label class="switch-toggle"><input type="checkbox" id="sec-audit-enabled"><span class="switch-slider"></span></label>
+                </div>
+                <div class="setting-item switch">
+                  <label>记录文件操作</label>
+                  <label class="switch-toggle"><input type="checkbox" id="sec-audit-file"><span class="switch-slider"></span></label>
+                </div>
+                <div class="setting-item switch">
+                  <label>记录命令执行</label>
+                  <label class="switch-toggle"><input type="checkbox" id="sec-audit-command"><span class="switch-slider"></span></label>
+                </div>
+                <div class="setting-item switch">
+                  <label>记录网络请求</label>
+                  <label class="switch-toggle"><input type="checkbox" id="sec-audit-network"><span class="switch-slider"></span></label>
+                </div>
+                <div class="setting-item">
+                  <label>最大保留日志数</label>
+                  <input type="number" id="sec-audit-max" min="100" max="100000" value="10000" style="width:100px;">
+                </div>
+                <div class="setting-item">
+                  <label>自动删除 (天)</label>
+                  <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+                    <input type="number" id="sec-audit-days" min="0" max="365" value="90" style="width:100px;">
+                    <span style="color:var(--text-muted);font-size:11px;">0=不自动删除</span>
+                  </div>
+                </div>
+                <div class="sec-audit-list" id="sec-audit-list">
+                  <div class="sec-audit-toolbar">
+                    <div class="sec-audit-toolbar-left">
+                      <select id="sec-audit-filter" class="sec-audit-select">
+                      <option value="">全部分类</option>
+                      <option value="file">文件</option>
+                      <option value="command">命令</option>
+                      <option value="network">网络</option>
+                      <option value="auth">认证</option>
+                      <option value="config">配置</option>
+                      <option value="data">数据</option>
+                    </select>
+                    <select id="sec-audit-risk" class="sec-audit-select">
+                      <option value="">全部风险</option>
+                      <option value="low">低</option>
+                      <option value="medium">中</option>
+                      <option value="high">高</option>
+                      <option value="critical">严重</option>
+                    </select>
+                    </div>
+                    <div class="sec-audit-toolbar-right">
+                      <button class="btn btn-default btn-sm" id="sec-btn-audit-refresh">刷新</button>
+                      <button class="btn btn-primary btn-sm" id="sec-btn-audit-export" style="margin-left:6px;">导出</button>
+                      <button class="btn btn-danger btn-sm" id="sec-btn-audit-clear" style="margin-left:6px;">清空</button>
+                      <span style="margin-left:8px;color:var(--text-muted);font-size:12px;align-self:center;">共 <span id="sec-audit-count">0</span> 条</span>
+                    </div>
+                  </div>
+                  <div class="sec-audit-content" id="sec-audit-content"><div class="sec-empty">暂无审计日志</div></div>
+                </div>
+              </div>
+    </div>
+  </div>
+</div>
 
+<!-- ===== 连通器管理弹窗（独立弹窗，由聊天页顶部「连通器」按钮打开）=====
+     层级：列表页（全部连通器）→ 详情页（**只显示所选的那一个**，标题栏有返回按钮）。
+     授权一律跳浏览器官方页面，不在应用里粘贴密钥。 -->
+<div class="conn-modal-overlay" id="conn-modal-overlay" style="display:none;">
+  <div class="conn-modal" id="conn-modal">
+    <div class="conn-modal-head">
+      <div class="conn-modal-head-left">
+        <button class="conn-back-btn" id="conn-back-btn" type="button" style="display:none;" title="返回列表">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+          返回
+        </button>
+        <div class="conn-modal-title" id="conn-modal-title">连通器</div>
+      </div>
+      <button class="security-modal-close" id="conn-modal-close">&times;</button>
+    </div>
+    <div class="conn-modal-body" id="conn-modal-body"></div>
+  </div>
+</div>
 
+<!-- ===== 智能商城（本地，无服务器）===== -->
+<div class="market-overlay" id="market-overlay" style="display:none;">
+  <div class="market-modal" id="market-modal">
+    <div class="market-head">
+      <div class="market-head-title">智能商城</div>
+      <button class="security-modal-close" id="market-modal-close">&times;</button>
+    </div>
+    <div class="market-tabs" id="market-tabs"></div>
+    <div class="market-toolbar">
+      <div class="market-cat">
+        <select id="market-cat-filter" title="按分类筛选"><option value="all">全部分类</option></select>
+      </div>
+      <div class="market-search">
+        <input type="text" id="market-search-input" placeholder="搜索技能 / MCP / 智能体…" />
+      </div>
+      <div class="market-actions">
+        <button class="btn btn-sm" id="market-btn-import-file">导入文件</button>
+        <button class="btn btn-sm" id="market-btn-import-url">导入 URL</button>
+        <button class="btn btn-sm" id="market-btn-refresh" title="刷新">刷新</button>
+      </div>
+    </div>
+    <div class="market-body" id="market-body"><div class="sec-conn-empty">加载中…</div></div>
+  </div>
+</div>
+<div class="market-url-input-overlay" id="market-url-input-overlay" style="display:none;">
+  <div class="market-url-input-box">
+    <div class="market-head-title">从 URL 导入</div>
+    <input type="text" id="market-url-input" placeholder="https://…（商城清单 / 技能包 zip / SKILL.md）" />
+    <div class="market-url-actions">
+      <button class="btn btn-sm" id="market-url-cancel">取消</button>
+      <button class="btn btn-sm btn-primary" id="market-url-ok">导入</button>
+    </div>
+  </div>
+</div>
 
+<!-- 需授权条目：密钥配置弹窗 -->
+<div class="market-overlay" id="market-config-overlay" style="display:none;">
+  <div class="market-url-input-box" style="width:520px;">
+    <div class="market-head-title" id="market-config-title">配置密钥并激活</div>
+    <div class="market-config-hint" id="market-config-hint"></div>
+    <div id="market-config-fields" style="display:flex;flex-direction:column;gap:10px;max-height:300px;overflow:auto;"></div>
+    <div class="market-config-secure">密钥经系统加密凭证库保存，明文不会写入任何配置文件。</div>
+    <div class="market-url-actions">
+      <button class="btn btn-sm" id="market-config-cancel">取消</button>
+      <button class="btn btn-sm btn-primary" id="market-config-ok">保存并激活</button>
+    </div>
+  </div>
+</div>
 
+<!-- 托管 / 说明弹窗 -->
+<div class="market-overlay" id="market-info-overlay" style="display:none;">
+  <div class="market-url-input-box" style="width:520px;">
+    <div class="market-head-title" id="market-info-title">说明</div>
+    <div id="market-info-body" style="font-size:13px;line-height:1.7;max-height:360px;overflow:auto;"></div>
+    <div class="market-url-actions">
+      <button class="btn btn-sm btn-primary" id="market-info-ok">知道了</button>
+    </div>
+  </div>
+</div>
 
+<!-- 开发人员（滚动字幕，播完即停，可手动上下滑动，带关闭按钮） -->
+<div class="dev-overlay" id="developers-overlay" style="display:none;">
+  <div class="dev-modal" id="developers-modal">
+    <div class="dev-modal-head">
+      <div class="dev-modal-title">开发人员</div>
+      <button class="security-modal-close" id="developers-close" title="关闭">&times;</button>
+    </div>
+    <div class="dev-credits-scroll" id="developers-scroll">
+      <div class="dev-credits-inner" id="developers-inner"></div>
+    </div>
+  </div>
+</div>
 
+<!-- ===== 桌面分身面板（右下角胶囊展开）===== -->
+<!-- 未连接时显示「启动并连接」引导 + 状态卡片；连接后切换为已连接状态视图（无画面预览）。 -->
+<div class="vdesk-widget" id="vdesk-widget" style="display:none;">
+  <!-- 微型态 -->
+  <button class="vdesk-mini" id="vdesk-mini" type="button" title="桌面分身（点击展开）" aria-label="桌面分身">
+    <span class="vdesk-mini-icon el-icon" data-icon="desktop"></span>
+    <span class="vdesk-mini-body">
+      <span class="vdesk-mini-name" id="vdesk-mini-name">桌面分身</span>
+      <span class="vdesk-mini-meta">
+        <span class="vdesk-mini-status" id="vdesk-mini-status">待命</span>
+      </span>
+    </span>
+    <span class="vdesk-mini-expand el-icon" data-icon="expand"></span>
+  </button>
 
+  <!-- 展开态：分身状态面板 -->
+  <div class="vdesk-panel" id="vdesk-panel" style="display:none;">
+    <div class="vdesk-panel-head">
+      <span class="vdesk-panel-title">桌面分身</span>
+      <div class="vdesk-panel-head-actions">
+        <button class="vdesk-icon-btn" id="vdesk-btn-refresh" type="button" title="刷新"><span class="el-icon" data-icon="history"></span></button>
+        <button class="vdesk-icon-btn" id="vdesk-btn-collapse" type="button" title="收起"><span class="el-icon" data-icon="collapse"></span></button>
+      </div>
+    </div>
+    <div class="vdesk-panel-sub" id="vdesk-panel-sub">AI 的点击与键盘都在独立桌面执行，不干扰你当前的桌面</div>
 
+    <div class="vdesk-panel-body" id="vdesk-panel-body">
+    <!-- ===== 未连接：引导 + 状态卡片 + 启动按钮 ===== -->
+    <div class="vdesk-gate" id="vdesk-gate">
+      <div class="vdesk-gate-icon" id="vdesk-gate-icon">
+        <span class="el-icon" data-icon="desktop"></span>
+        <span class="vdesk-gate-dot" id="vdesk-gate-dot"></span>
+      </div>
+      <div class="vdesk-gate-title" id="vdesk-gate-title">桌面分身尚未启动</div>
+      <div class="vdesk-gate-desc" id="vdesk-gate-desc">点击「启动并连接」，将创建独立桌面并建立连接</div>
 
+      <div class="vdesk-clone-status" id="vdesk-clone-status">
+        <div class="vdesk-clone-line">
+          <span class="vdesk-clone-label">连接</span>
+          <span class="vdesk-clone-value" id="vdesk-clone-conn">未连接</span>
+        </div>
+        <div class="vdesk-clone-line">
+          <span class="vdesk-clone-label">授权</span>
+          <span class="vdesk-clone-value" id="vdesk-clone-auth-line">未授权</span>
+        </div>
+      </div>
 
+      <div class="vdesk-gate-actions">
+        <button class="vdesk-btn vdesk-btn-primary" id="vdesk-btn-start" type="button">
+          <span class="el-icon" data-icon="play"></span><span id="vdesk-start-label">启动并连接</span>
+        </button>
+        <button class="vdesk-btn" id="vdesk-btn-help" type="button">
+          <span class="el-icon" data-icon="info"></span><span>使用说明</span>
+        </button>
+      </div>
+      <div class="vdesk-gate-hint" id="vdesk-gate-hint">隔离桌面用于跑编译、脚本等不需要看界面的任务，跑完汇报文字结果</div>
+    </div>
 
+    <!-- ===== 已连接：隔离桌面状态（不提供画面预览）===== -->
+    <div class="vdesk-live" id="vdesk-live" style="display:none;">
+      <div class="vdesk-live-bar">
+        <span class="vdesk-live-badge" id="vdesk-live-badge">已连接</span>
+        <span class="vdesk-live-title" id="vdesk-live-title">隔离桌面已就绪</span>
+        <span class="vdesk-live-spacer"></span>
+        <button class="vdesk-icon-btn" id="vdesk-live-disconnect" type="button" title="断开连接"><span class="el-icon" data-icon="unlink"></span></button>
+      </div>
+      <div class="vdesk-live-hint">桌面分身是输入栏上方那个没有标题栏的预览小窗：它只是预览，鼠标点不动里面的画面；双击它剥离成独立大窗（标题栏「—」收回小窗、「✕」关闭），右上角 ✕ 直接关闭。<br>独立桌面用于跑编译、脚本等不需要看界面的任务，跑完 AI 会用文字汇报结果。需要看或操作界面的任务，会在你的真实桌面上进行。</div>
+    </div>
+
+    <!-- ===== 画中画：观察 AI 正在操作的目标程序 ===== -->
+    <div class="vdesk-pip" id="vdesk-pip" style="display:none;">
+      <div class="vdesk-pip-head">
+        <span class="vdesk-pip-title" id="vdesk-pip-title">未选择目标</span>
+        <span class="vdesk-pip-badge" id="vdesk-pip-badge">AI 操作中</span>
+      </div>
+      <!-- 画面区：点击即可把这一下转发给真实窗口（用户辅助点击） -->
+      <div class="vdesk-pip-stage" id="vdesk-pip-stage" title="点击画面可接管（AI 会继续操作其余部分）">
+        <img class="vdesk-pip-img" id="vdesk-pip-img" alt="目标窗口实时画面" style="display:none;">
+        <div class="vdesk-pip-empty" id="vdesk-pip-empty">选择要观察的程序<br><span style="opacity:.7">AI 会在它上面操作，你能在这里看到并随时点一下接管</span></div>
+      </div>
+      <div class="vdesk-pip-hint" id="vdesk-pip-hint">在画面上点击 = 你接管这一步；其余由 AI 继续</div>
+    </div>
+    <div class="vdesk-target-row" id="vdesk-target-row" style="display:none;">
+      <select class="vdesk-select" id="vdesk-target-select" title="选择要观察/操作的程序窗口">
+        <option value="">选择要观察的程序…</option>
+      </select>
+      <button class="vdesk-btn compact" id="vdesk-btn-pip" type="button">
+        <span class="el-icon" data-icon="expand"></span><span id="vdesk-pip-btn-label">进入画中画</span>
+      </button>
+    </div>
+    <div class="vdesk-panel-foot">
+      <button class="vdesk-btn" id="vdesk-btn-auth" type="button">
+        <span class="el-icon" data-icon="lock"></span><span id="vdesk-auth-label">授权操作</span>
+      </button>
+      <button class="vdesk-btn vdesk-btn-exit" id="vdesk-btn-exit" type="button" style="display:none;">
+        <span class="el-icon" data-icon="unlink"></span><span>断开连接</span>
+      </button>
+    </div>
+  </div>
+</div>

@@ -104,12 +104,54 @@ const CHANGELOG = [
 ];
 
 
+const fs = require('fs');
+const path = require('path');
+
+// ★ 更新公告数据合并：
+//   内置 CHANGELOG 只维护到 1.0.4，而完整安装包升级到 1.0.7 / 1.0.8 等新版本时，
+//   主进程 changelog:check-update 在硬编码数组里查不到当前版本 → changes 为 null →
+//   渲染层 `if (result.hasUpdate && result.changes)` 为假 → 启动时不弹「更新公告」。
+//   仓库里其实维护了完整的 renderer/data/changelog.json（含 1.0.7 / 1.0.8），
+//   这里读取并与之按版本合并，保证主进程公告数据与渲染层一致。
+let _mergedChangelog = null;
+function resolveChangelogData() {
+  if (_mergedChangelog) return _mergedChangelog;
+  const candidates = [
+    // 开发 / 打包（asar 内相对路径可读）
+    path.join(__dirname, '..', 'renderer', 'data', 'changelog.json'),
+    path.join(__dirname, '..', '..', 'renderer', 'data', 'changelog.json'),
+    // 打包版兜底：resources/app.asar/src/renderer/data/changelog.json
+    path.join(process.resourcesPath || '', 'app.asar', 'src', 'renderer', 'data', 'changelog.json')
+  ];
+  let fileData = [];
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) {
+        const parsed = JSON.parse(fs.readFileSync(p, 'utf-8'));
+        if (Array.isArray(parsed) && parsed.length > 0) { fileData = parsed; break; }
+      }
+    } catch (e) { /* 尝试下一个候选路径 */ }
+  }
+  if (fileData.length === 0) { _mergedChangelog = CHANGELOG; return _mergedChangelog; }
+  // 合并：changelog.json 为主（含最新版本），内置 CHANGELOG 补充缺失版本；按版本去重
+  const seen = new Map();
+  const merged = [];
+  const push = (e) => {
+    if (e && e.version && !seen.has(e.version)) { seen.set(e.version, true); merged.push(e); }
+  };
+  fileData.forEach(push);
+  CHANGELOG.forEach(push);
+  _mergedChangelog = merged;
+  return _mergedChangelog;
+}
+
 function getChangelog() {
-  return CHANGELOG;
+  return resolveChangelogData();
 }
 
 function getLatestVersion() {
-  return CHANGELOG.length > 0 ? CHANGELOG[0].version : '0.0.0';
+  const list = resolveChangelogData();
+  return list.length > 0 ? list[0].version : '0.0.0';
 }
 
 module.exports = { getChangelog, getLatestVersion };

@@ -1,0 +1,35 @@
+version: 1
+labels:
+  run_shell: 执行命令
+  read_file: 读取文件
+  write_file: 写入文件
+  get_system_info: 系统信息
+  pet_action: 宠物动作
+  web_search: 网络搜索
+  web_fetch: 抓取网页
+  http_request: HTTP 请求
+  file_search: 搜索文件
+  directory_list: 列出目录
+  copy_file: 复制文件
+  move_file: 移动文件
+  create_directory: 创建目录
+  download_file: 下载文件
+  get_current_time: 当前时间
+  calculator: 计算器
+  check_url: 检查链接
+  open_url: 打开链接
+  memory_save: 记忆写入
+  memory_search: 记忆检索
+  memory_list: 记忆列表
+  memory_delete: 记忆删除
+  capture_window: 窗口截图
+  verify_ui: 界面自验证
+  analyze_screenshot: 看图分析
+  control_computer: 控制电脑
+  launch_in_clone: 分身启动程序
+  ensure_clone_desktop: 准备桌面分身
+  launch_project: 启动项目
+  todo_write: 整理待办
+  todo_update: 更新进度
+  todo_read: 读取待办
+  ask_user: 询问用户

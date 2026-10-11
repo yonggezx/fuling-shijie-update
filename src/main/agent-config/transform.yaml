@@ -1,0 +1,93 @@
+# ============================================================================
+# transform.yaml —— 文本加工规则
+# ============================================================================
+# 规范语义：**进 AI 上下文之前，对文本做什么加工**。
+# 这套规则原先硬编码在三个地方，现在统一外置：
+#   · src/renderer/js/app.js   → estimateTokens() 的系数、SINGLE_MESSAGE_TOKEN_CAP、
+#                               trimHistoryContent() / trimTextToTokens() 的省略后缀
+#   · src/main/ipc/aiOps.js    → approxTokens() 的 0.26 系数
+#   · src/renderer/js/app.js   → 上下文压缩阈值、容量条告警阈值
+#
+# ⚠️ 本文件**永不进 AI 上下文**（模型不需要知道我们在怎么估算 token）。
+#    由主进程 agentConfig 加载，经 ipcMain 'ai:get-context-meta' 下发给渲染层。
+# ============================================================================
+version: 1
+
+# ── token 估算 ──────────────────────────────────────────────────────────────
+# 粗略估算：CJK 1 字符 ≈ 1 token，其他字符 4 个 ≈ 1 token（即 × 0.26）。
+# 两端必须一致，否则前端容量条会和后端真实 prompt_tokens 打架。
+tokenEstimate:
+  # 非 CJK 字符的 token 折算系数（0.26 ≈ 1/4，留了一点余量给标点/emoji）
+  nonCjkRatio: 0.26
+  # 参与统计的 CJK 码位区间（主进程与渲染层共用同一份定义）
+  cjkPattern: "[\\u2E80-\\u9FFF\\uF900-\\uFAFF\\uAC00-\\uD7AF\\uFF00-\\uFFEF]"
+
+# ── 截断 / 压缩预算 ─────────────────────────────────────────────────────────
+budget:
+  # 单条历史消息进入请求体的 token 上限，超出即截断
+  singleMessageTokenCap: 2000
+  # 截断后追加的省略说明模板，{tokens} 会被替换成估算省略量
+  ellipsisTemplate: "\n……（历史消息过长，此处省略约 {tokens} tokens）"
+  # 硬上限兜底（最新一条本身就超预算时）用的后缀模板
+  hardCapEllipsisTemplate: "\n……（消息过长，此处省略约 {tokens} tokens）"
+  # 省略后缀本身的 token 预留，避免后缀把总估算顶出预算
+  ellipsisOverheadTokens: 40
+  # 按估算反复收缩正文时的收缩比例与最大轮数
+  shrinkRatio: 0.92
+  shrinkMaxRounds: 40
+  # 收缩下限：短于此长度就停止收缩（防止把消息砍成空）
+  minKeepChars: 80
+
+# ── 上下文水位 ──────────────────────────────────────────────────────────────
+context:
+  # 超过该使用率（%）触发自动压缩
+  autoCompressThreshold: 85
+  # 压缩时保留最近 N 条真实消息，更早的进摘要
+  keepRecentMessages: 20
+  # 容量条告警阈值（%）
+  barWarn: 70
+  barDanger: 90
+  # 无法识别模型时的保守默认窗口（与 Ollama num_ctx 一致）
+  defaultWindow: 32768
+  # 请求体预留的固定开销（tokens）
+  requestOverhead: 256
+  # 容量估算的最低预算，防止小窗口模型算出负数
+  minBudget: 1000
+
+# ── Agent 模式的固定开销加成 ────────────────────────────────────────────────
+# 渲染层看不到主进程拼装的完整 prompt（角色提示 + 强制要求 + 个性化 + 工作目录），
+# 所以按经验值补一块，避免容量条系统性低估。
+agentOverhead:
+  # 角色/强制要求/个性化等追加段落的估算 tokens
+  appendedPromptTokens: 600
+  # 无法拿到真实数据时的工具 schema 兜底估值
+  fallbackToolsTokens: 3200
+
+# ── 敏感信息遮蔽（进 AI 之前先擦掉）────────────────────────────────────────
+# 与 tool-labels.yaml 的分工：那边管「把函数名换成人话」，这里管「把密钥/凭据擦掉」。
+# ⚠️ JS 的RegExp **不支持 (?i) 内联标志**（那是 Python 语法），会被判为 Invalid group 直接失效。
+#    需要忽略大小写就用显式的 flags 字段。
+redact:
+  enabled: true
+  # 命中即替换为 mask，顺序敏感：先长后短，避免短 pattern 吃掉长的
+  mask: "***"
+  patterns:
+    - name: privateKeyBlock
+      pattern: "-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]*PRIVATE KEY-----"
+
+    - name: openai
+      pattern: "sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}"
+
+    - name: supabaseAnonKey
+      pattern: "eyJ[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}\\.[A-Za-z0-9_-]{20,}"
+    - name: jwt
+      pattern: "eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}"
+
+    - name: bearerToken
+      pattern: "bearer\\s+[A-Za-z0-9._-]{20,}"
+      flags: "i"
+    - name: assignmentSecret
+      # key=secret / "key": "secret" 形式，保留键名只擦值
+      pattern: "((?:api[_-]?key|secret|token|password)\\s*[=:]\\s*[\"']?)([A-Za-z0-9._-]{12,})"
+      flags: "i"
+      keepGroup: 1
