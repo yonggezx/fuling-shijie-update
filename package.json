@@ -19,8 +19,8 @@
     "prebuild": "node scripts/copy-build-resources.js && node scripts/build-rdp-host.js",
     "build:win-dir": "npm run prebuild && electron-builder --win --x64 --dir",
     "build:web-installer": "node scripts/build-web-installer.js",
-    "build:linux": "node scripts/copy-build-resources.js && electron-builder --linux --x64",
-    "build:mac": "node scripts/copy-build-resources.js && electron-builder --mac --x64 --arm64",
+    "build:linux": "node scripts/copy-build-resources.js && electron-builder --linux --x64 --publish=never",
+    "build:mac": "node scripts/copy-build-resources.js && electron-builder --mac --x64 --arm64 --publish=never",
     "optimize:cursors": "electron scripts/optimize-cursor-assets.js",
     "test:cursor": "electron scripts/test-cursor-perf.js",
     "test:active-provider": "electron scripts/test-ai-active-provider.js"
