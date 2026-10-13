@@ -3602,11 +3602,14 @@ function setupIpcListeners() {
             rec._thinkTimer = setTimeout(() => {
               rec._thinkTimer = null;
               const c = rec.el && rec.el.isConnected ? rec.el.querySelector('.agent-reasoning-content') : null;
-              if (c) c.textContent = rec.text;
+              if (c) { c.style.display = 'block'; c.textContent = rec.text; }
             }, AGENT_TEXT_RENDER_MS);
           }
           const toggle = rec.el.querySelector('.reasoning-toggle');
           if (toggle) toggle.style.transform = 'rotate(90deg)';
+          // 新思考块默认 display:none，收到 reasoning 时必须展开，否则内容看不见
+          const cNow = rec.el && rec.el.querySelector('.agent-reasoning-content');
+          if (cNow && cNow.style.display === 'none') cNow.style.display = 'block';
         }
         // 思考一开始就把「等待模型响应」占位撤掉（真实内容马上接管）
         dropAgentPlaceholder(el);
@@ -4360,6 +4363,14 @@ function collectConvArtifacts(conv) {
       while ((mm = imgRe.exec(content))) { const u = mm[1].trim(); if (u && !seenImg.has(u)) { seenImg.add(u); images.push(u); } }
       const linkRe = /\[([^\]]*)\]\(((?:https?:\/\/)[^)\s]+)\)/g;
       while ((mm = linkRe.exec(content))) { const u = mm[2].trim(); if (u && !seenLink.has(u)) { seenLink.add(u); links.push({ text: mm[1] || u, url: u }); } }
+      // AI 通过工具新增/修改的文件 → 也收集到产物里
+      (m.changedFiles || []).forEach(cf => {
+        const k = cf.path || cf.file || '';
+        if (k && !seenFile.has(k)) {
+          seenFile.add(k);
+          files.push({ name: cf.name || k.split(/[\\/]/).pop() || k, path: k, changed: true });
+        }
+      });
     }
   }
   return { images, links, files };
@@ -7422,6 +7433,7 @@ async function runChatRequest(conv, userMsg) {
       }
       saveConversations();
       renderConversationList();
+      if (convPanels.right) renderConvAssets();
     } else {
       // 先创建占位消息，显示等待状态
       const aiMsg = { role: 'ai', content: '', time: Date.now() };

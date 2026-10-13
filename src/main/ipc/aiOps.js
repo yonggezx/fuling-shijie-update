@@ -4463,10 +4463,12 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
         emit('agent-content', { text: '\n> 警告：你还没检查项目代码就要改文件，本次已放行，但很可能改错地方。', iteration });
       }
 
-      if (nextStepNotice) {
-        emit('agent-content', { text: nextStepNotice, iteration });
-        nextStepNotice = '';
-      }
+      // nextStepNotice 不再作为正文补发：reasoning 已在思考块里流式显示，
+      // 重复发送会导致同一句话出现在思考块和正文两处。用户想看"为什么执行这个工具"展开思考块即可。
+      // if (nextStepNotice) {
+      //   emit('agent-content', { text: nextStepNotice, iteration });
+      //   nextStepNotice = '';
+      // }
       emit('agent-tool-exec', { tool: fnName, args: fnArgs, iteration });
 
       // 需要用户确认的工具

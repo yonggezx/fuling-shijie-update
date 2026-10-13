@@ -107,9 +107,11 @@ function readSkillMd(skillId) {
  */
 function buildNotice(enabledList) {
   if (!enabledList || !enabledList.length) return '';
+  const baseDir = skillsDir();
   const lines = enabledList.map(s => {
     const hint = s.description ? s.description.split(/[。\n]/)[0] : '';
-    return `- **${s.name}**（技能 ${s.id}）：${hint}。命中时先用 read_file 读取 ${'data/skills/' + s.id + '/SKILL.md'} 了解用法，再按说明执行。`;
+    const absPath = path.join(baseDir, s.id, 'SKILL.md');
+    return `- **${s.name}**（技能 ${s.id}）：${hint}。命中时先用 read_file 读取 ${absPath} 了解用法，再按说明执行。`;
   }).join('\n');
   return `\n\n## 可用技能（按需调用）\n你可以调用以下已启用的技能来完成对应任务。命中相关场景时，先用 read_file 读取该技能的 SKILL.md，严格按其说明执行，不要自创做法。\n${lines}`;
 }
