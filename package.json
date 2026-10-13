@@ -1,6 +1,6 @@
 {
   "name": "fuling-shijie",
-  "version": "1.0.8",
+  "version": "1.0.10",
   "description": "浮灵饰界 - 智能桌面宠物助手，支持Live2D模型、本地/云端AI模型、系统操作",
   "main": "src/main/main.js",
   "scripts": {
