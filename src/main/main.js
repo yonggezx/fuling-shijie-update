@@ -1561,9 +1561,19 @@ ipcMain.handle('config:reset', () => {
 // 不再提供 taskbar:apply / taskbar:restore —— 那条路（进程内改写 accent）本机实测会让 explorer 崩溃。
 // 新方案（Phase B / XAML TAP）：注入 aiLobsterTap.dll，通过 XAML 诊断修改 BackgroundFill 画刷。
 // 详见 docs/任务栏-PhaseB-可行性报告.md
-const TaskbarAppearance = process.platform === 'win32' ? require('./taskbarTransparency') : null;
-const TapClient = process.platform === 'win32' ? require('./taskbar-inject/tapClient') : null;
-const StartMenuClient = process.platform === 'win32' ? require('./taskbar-inject/startMenuClient') : null;
+let TaskbarAppearance = null;
+if (process.platform === 'win32') {
+  try { TaskbarAppearance = require('./taskbarTransparency'); } catch (e) { console.warn('[Main] TaskbarAppearance 加载失败（已降级）:', e.message); }
+}
+// 纯外观功能，加载失败（如 koffi native 模块在 asar 内无法加载）时降级为 null，绝不能让主程序起不来。
+let TapClient = null;
+if (process.platform === 'win32') {
+  try { TapClient = require('./taskbar-inject/tapClient'); } catch (e) { console.warn('[Main] TapClient 加载失败（已降级）:', e.message); }
+}
+let StartMenuClient = null;
+if (process.platform === 'win32') {
+  try { StartMenuClient = require('./taskbar-inject/startMenuClient'); } catch (e) { console.warn('[Main] StartMenuClient 加载失败（已降级）:', e.message); }
+}
 // 弹层（任务栏程序右键的跳转列表）/ 通知栏 —— 进程外 SCA，无需注入（详见模块头注释）
 // 纯外观功能，加载失败（如 koffi 原生模块缺失）时降级为 null，绝不能让主程序起不来。
 let ShellSurfaceAccent = null;

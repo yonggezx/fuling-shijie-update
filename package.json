@@ -41,7 +41,9 @@
       "package.json"
     ],
     "asarUnpack": [
-      "node_modules/sherpa-onnx-*/**"
+      "node_modules/sherpa-onnx-*/**",
+      "node_modules/@koromix/koffi-*/**",
+      "node_modules/koffi/**/*.node"
     ],
     "directories": {
       "output": "dist",
