@@ -4576,6 +4576,7 @@ async function archiveConversation(id) {
   conv.archivedAt = Date.now();
   saveConversations();
   renderConversationList();
+  renderSidebarConversations();
   showToast('会话已归档', conv.title || '未命名对话', 'info');
 }
 
