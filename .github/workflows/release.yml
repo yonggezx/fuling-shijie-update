@@ -24,7 +24,7 @@ jobs:
       - name: 安装依赖
         run: npm ci
       - name: 打包 Windows
-        run: npm run build:win-dir
+        run: npm run build:win
       - name: 创建 Release
         id: create_release
         uses: softprops/action-gh-release@v2

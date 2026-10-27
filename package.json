@@ -1,6 +1,6 @@
 {
   "name": "fuling-shijie",
-  "version": "1.0.8",
+  "version": "1.0.12",
   "description": "浮灵饰界 - 智能桌面宠物助手，支持Live2D模型、本地/云端AI模型、系统操作",
   "main": "src/main/main.js",
   "scripts": {
@@ -18,6 +18,7 @@
     "test:clone-follow": "node scripts/test-clone-follow.js",
     "prebuild": "node scripts/copy-build-resources.js && node scripts/build-rdp-host.js",
     "build:win-dir": "npm run prebuild && electron-builder --win --x64 --dir",
+    "build:win": "npm run prebuild && electron-builder --win --x64 --publish=never",
     "build:web-installer": "node scripts/build-web-installer.js",
     "build:linux": "node scripts/copy-build-resources.js && electron-builder --linux --x64 --publish=never",
     "build:mac": "node scripts/copy-build-resources.js && electron-builder --mac --x64 --arm64 --publish=never",
@@ -52,12 +53,13 @@
     "win": {
       "target": [
         {
-          "target": "dir",
+          "target": "nsis",
           "arch": [
             "x64"
           ]
         }
       ],
+      "artifactName": "浮灵饰界_Setup_v${version}.exe",
       "icon": "assets/icons/icon.ico",
       "requestedExecutionLevel": "asInvoker",
       "files": [
