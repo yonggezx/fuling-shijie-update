@@ -1,0 +1,7 @@
+{
+  "name": "mcp-tool-weather",
+  "version": "0.1.0",
+  "kind": "tool",
+  "description": "MCP 工具插件：注册 weather 工具（模拟 MCP 远程调用）",
+  "entry": "index.js"
+}

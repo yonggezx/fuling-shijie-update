@@ -1,0 +1,106 @@
+================ 浮灵饰界 · 插件化运行时骨架演示 ================
+
+--- [1] 内核与插件加载 ---
+插件: tool-basic, model-adapter, audit, guard, agent-main-loop, subagent, skill-templates
+服务: tool.registry, tool.execute, model.generate, model.adapter.info, audit, guard.policy, agent.loop, agent.subagent, agent.registry, skill.registry
+钩子: step.tool.before
+
+--- [2] ReAct 多步执行：目标 "3 + 4"（推理→工具→结论） ---
+结果: status=completed, result="计算完成：7"
+
+--- [3] 暂停 / 续跑 / Fork（状态全在日志里） ---
+暂停后折叠状态: paused
+续跑后折叠状态: running
+Fork 分支 t_mv7xqy9vej7n 执行: status=completed, result="计算完成：2026-10-14T09:56:50.564Z"
+
+--- [4] 横切：审计（事件总线旁路记录，不改主流程） ---
+审计记录 6 条:
+    turn.started @turn=t_mv7xqy9t8jlq
+    step.tool.completed @turn=t_mv7xqy9t8jlq
+    turn.completed @turn=t_mv7xqy9t8jlq
+    turn.started @turn=t_mv7xqy9v48bl
+    step.tool.completed @turn=t_mv7xqy9vej7n
+    turn.completed @turn=t_mv7xqy9vej7n
+
+--- [5] 横切：风控拦截（钩子 abort，主循环无需改动） ---
+目标被拦截: status=failed, error=策略拦截：工具 "delete-everything" 被禁用
+guard 策略: 禁用 delete-everything
+
+--- [6] 回放（唯一可信源）：完整事件流 ---
+  [  1] plugin.loaded
+  [  2] plugin.loaded
+  [  3] plugin.loaded
+  [  4] plugin.loaded
+  [  5] plugin.loaded
+  [  6] plugin.loaded
+  [  7] plugin.loaded
+  [  8] session.created
+  [  9] turn.started @t_mv7xqy9t8jlq
+  [ 10] step.started @t_mv7xqy9t8jlq
+  [ 11] step.llm.requested @t_mv7xqy9t8jlq
+  [ 12] step.llm.completed @t_mv7xqy9t8jlq
+  [ 13] step.tool.calling @t_mv7xqy9t8jlq
+  [ 14] step.tool.completed @t_mv7xqy9t8jlq
+  [ 15] step.completed @t_mv7xqy9t8jlq
+  [ 16] step.started @t_mv7xqy9t8jlq
+  [ 17] step.llm.requested @t_mv7xqy9t8jlq
+  [ 18] step.llm.completed @t_mv7xqy9t8jlq
+  [ 19] step.completed @t_mv7xqy9t8jlq
+  [ 20] turn.completed @t_mv7xqy9t8jlq
+  [ 21] turn.started @t_mv7xqy9v48bl
+  [ 22] turn.paused @t_mv7xqy9v48bl
+  [ 23] turn.resumed @t_mv7xqy9v48bl
+  [ 24] turn.forked @t_mv7xqy9vej7n
+  [ 25] step.started @t_mv7xqy9vej7n
+  [ 26] step.llm.requested @t_mv7xqy9vej7n
+  [ 27] step.llm.completed @t_mv7xqy9vej7n
+  [ 28] step.tool.calling @t_mv7xqy9vej7n
+  [ 29] step.tool.completed @t_mv7xqy9vej7n
+  [ 30] step.completed @t_mv7xqy9vej7n
+  [ 31] step.started @t_mv7xqy9vej7n
+  [ 32] step.llm.requested @t_mv7xqy9vej7n
+  [ 33] step.llm.completed @t_mv7xqy9vej7n
+  [ 34] step.completed @t_mv7xqy9vej7n
+  [ 35] turn.completed @t_mv7xqy9vej7n
+  [ 36] session.created
+  [ 37] turn.started @t_mv7xqy9wa5by
+  [ 38] step.started @t_mv7xqy9wa5by
+  [ 39] step.llm.requested @t_mv7xqy9wa5by
+  [ 40] step.llm.completed @t_mv7xqy9wa5by
+  [ 41] step.tool.calling @t_mv7xqy9wa5by
+  [ 42] step.tool.failed @t_mv7xqy9wa5by
+  [ 43] turn.failed @t_mv7xqy9wa5by
+
+--- [7] 日志折叠 → 重建状态（状态 = 日志的纯函数） ---
+turn t_mv7xqy9t8jlq: status=completed, result="计算完成：7", steps=2
+    step t_mv7xqy9t8jlq:st1: status=done, calls=1, results=1
+    step t_mv7xqy9t8jlq:st2: status=done, calls=0, results=0
+
+--- [8] 任务编排：子智能体（独立 Session）+ Skill 模板 ---
+子智能体 session=s_mv7xqy9xm42p：7 - 2 → 计算完成：5 (status=completed)
+Skill 模板: math.multi-compute
+Skill 汇总: 1 + 2 = 3；10 - 4 = 6；7 + 3 = 10
+Skill 并行委派产生的独立子 Session 数: 3
+编排后日志事件总数: 95
+
+--- [9] 事件日志落盘 + 崩溃恢复续跑（跨运行时实例） ---
+Runtime A：turn t_mv7xqya052oe 开始后暂停即退出（模拟崩溃），已落盘 3 条事件
+Runtime B：从日志恢复，折叠出 turn t_mv7xqya052oe 状态=paused（goal=3 + 4），开始续跑...
+续跑完成: status=completed, result=计算完成：7, steps=2
+恢复时日志事件总数: 21
+
+--- [10] 评估回归（EvalSuite：回放事件日志断言） ---
+    评估回归: 4/4 通过
+      PASS  加法  [goal=3 + 4] status=completed result="计算完成：7" (期望 /7/)
+      PASS  减法  [goal=10 - 4] status=completed result="计算完成：6" (期望 /6/)
+      PASS  时间  [goal=现在几点] status=completed result="计算完成：2026-10-14T09:56:50.574Z"
+      PASS  未知目标应完成(容错)  [goal=今天吃什么] status=completed result="（mock 模型）无法处理目标：今天吃什么（当前可用工具：calc, time, echo）"
+
+--- [11] 导出事件流供回放/调试 UI（观测层） ---
+已导出 141 条事件 → src\main\runtime\ui\sample-events.json
+用浏览器打开 ui/replay-viewer.html，点「载入示例」或选择该 JSON 即可回放。
+
+--- [12] 热卸载演示：卸载 audit，服务消失 ---
+卸载后服务含 audit: false
+
+================ 演示结束 ================

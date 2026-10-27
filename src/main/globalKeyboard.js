@@ -23,7 +23,9 @@ let onKeyEvent = null;
 
 // 轮询与推送参数
 const THROTTLE_MS = 20;         // 活动期轮询间隔：20ms（约50fps）
-const IDLE_THROTTLE_MS = 120;   // 空闲期轮询间隔：120ms（降频省 CPU）
+const IDLE_THROTTLE_MS = 30;    // 空闲期轮询间隔：30ms（仍比活动期20ms低，略省CPU）
+                                // 不能太大（如120ms）：空闲后首次按键最多要等一个间隔才被捕捉，
+                                // 导致按键手势"要等一会才出现"。30ms 内捕捉，几乎瞬时显示。
 const IDLE_MS = 4000;           // 连续无按键活动多少 ms 后进入空闲降频
 const FLUSH_MS = 16;            // 批量推送节拍：16ms（≈60fps，与渲染帧率匹配）
 const MAX_QUEUE = 128;          // 有界边缘队列上限（超出丢弃最旧事件，防止内存膨胀）

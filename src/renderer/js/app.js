@@ -2288,17 +2288,22 @@ function setupWindowControls() {
     });
   }
 
-  // 手动拉伸窗口放大（非系统最大化/全屏）也视为「放大」：默认展开双侧栏、聊天区固定
+  // 首次初始化：宽屏默认展开双侧栏。之后用户手动收起/展开的操作为准，
+  // 不再因窗口尺寸变化自动改侧栏状态（Ctrl+滚轮缩放也会触发 resize，之前会导致收起的侧栏被异常展开）。
+  let _convPanelAutoInit = false;
   window.addEventListener('resize', () => {
+    if (_convPanelAutoInit) return;
     const big = window.innerWidth >= 1240;
     if (big && !_convMaximized) {
       _convMaximized = true;
       convPanels.left = true;
       convPanels.right = true;
       applyConvPanelState();
+      _convPanelAutoInit = true;
     } else if (!big && _convMaximized && !_mainFullscreen) {
       _convMaximized = false;
       applyConvPanelState();
+      _convPanelAutoInit = true;
     }
   });
 }
@@ -7956,11 +7961,15 @@ async function importModelFile() {
   if (result.success) {
     state.models = await window.api.listModels();
     renderModelList();
-    const count = result.count || 1;
-    if (count > 1) {
-      showToast('导入成功', `共导入 ${count} 个模型`, 'success');
+    if (result.skipped || result.count === 0) {
+      showToast('已导入', result.detail || '该模型已在列表中', 'info');
     } else {
-      showToast('导入成功', `${result.data.name} 已导入`, 'success');
+      const count = result.count || 1;
+      if (count > 1) {
+        showToast('导入成功', `共导入 ${count} 个模型`, 'success');
+      } else {
+        showToast('导入成功', `${result.data.name} 已导入`, 'success');
+      }
     }
   } else {
     showToast('导入失败', result.error, 'error');
@@ -7978,11 +7987,15 @@ async function importModelDirectory() {
   if (result.success) {
     state.models = await window.api.listModels();
     renderModelList();
-    const count = result.count || 1;
-    if (count > 1) {
-      showToast('导入成功', `共从目录导入 ${count} 个模型`, 'success');
+    if (result.skipped || result.count === 0) {
+      showToast('已导入', result.detail || '目录中的模型已在列表中', 'info');
     } else {
-      showToast('导入成功', `${result.data.name} 已导入`, 'success');
+      const count = result.count || 1;
+      if (count > 1) {
+        showToast('导入成功', `共从目录导入 ${count} 个模型`, 'success');
+      } else {
+        showToast('导入成功', `${result.data.name} 已导入`, 'success');
+      }
     }
   } else {
     showToast('导入失败', result.error, 'error');
@@ -12397,6 +12410,9 @@ async function saveSettings() {
 
   // 任务栏外观不进应用配置：它直接对应系统设置（开关值实时从注册表读），存两份会不一致。
   // 旧的 taskbar.enabled / taskbar.effect 已废弃 —— 那个效果在本机无法安全实现。
+  // 记录修改前的配置：必须在合并 state 之前取值。否则下方「主题/透明度是否变化」判断
+  // 读到的是已更新后的值，恒等 → applyTheme 永不触发 → 深/浅色无法立即切换。
+  const prevSys = state.settings.system || {};
   await window.api.setConfig({ pet, system: sys });
   state.settings.pet = { ...state.settings.pet, ...pet };
   state.settings.system = { ...state.settings.system, ...sys };
@@ -12416,7 +12432,6 @@ async function saveSettings() {
   }
 
   // 仅在主题/透明度实际变化时才翻转根属性（无谓的翻转 = 全文档样式重匹配）
-  const prevSys = state.settings.system || {};
   if (sys.theme !== (prevSys.theme || 'dark')) applyTheme(sys.theme);
   if ((sys.transparency || false) !== (prevSys.transparency || false)) applyTransparency(sys.transparency || false);
 

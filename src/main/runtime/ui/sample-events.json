@@ -1,0 +1,319 @@
+{
+  "exportedAt": "2026-10-14T09:56:50.955Z",
+  "sessionId": null,
+  "eventCount": 21,
+  "events": [
+    {
+      "event_id": "evt_1",
+      "seq": 1,
+      "ts": "2026-10-14T09:56:50.831Z",
+      "type": "plugin.loaded",
+      "scope": {
+        "plugin": "tool-basic"
+      },
+      "payload": {
+        "name": "tool-basic",
+        "version": "0.1.0"
+      }
+    },
+    {
+      "event_id": "evt_2",
+      "seq": 2,
+      "ts": "2026-10-14T09:56:50.832Z",
+      "type": "plugin.loaded",
+      "scope": {
+        "plugin": "model-adapter"
+      },
+      "payload": {
+        "name": "model-adapter",
+        "version": "0.1.0"
+      }
+    },
+    {
+      "event_id": "evt_3",
+      "seq": 3,
+      "ts": "2026-10-14T09:56:50.832Z",
+      "type": "plugin.loaded",
+      "scope": {
+        "plugin": "audit"
+      },
+      "payload": {
+        "name": "audit",
+        "version": "0.1.0"
+      }
+    },
+    {
+      "event_id": "evt_4",
+      "seq": 4,
+      "ts": "2026-10-14T09:56:50.832Z",
+      "type": "plugin.loaded",
+      "scope": {
+        "plugin": "guard"
+      },
+      "payload": {
+        "name": "guard",
+        "version": "0.1.0"
+      }
+    },
+    {
+      "event_id": "evt_5",
+      "seq": 5,
+      "ts": "2026-10-14T09:56:50.833Z",
+      "type": "plugin.loaded",
+      "scope": {
+        "plugin": "agent-main-loop"
+      },
+      "payload": {
+        "name": "agent-main-loop",
+        "version": "0.1.0"
+      }
+    },
+    {
+      "event_id": "evt_6",
+      "seq": 6,
+      "ts": "2026-10-14T09:56:50.833Z",
+      "type": "plugin.loaded",
+      "scope": {
+        "plugin": "subagent"
+      },
+      "payload": {
+        "name": "subagent",
+        "version": "0.1.0"
+      }
+    },
+    {
+      "event_id": "evt_7",
+      "seq": 7,
+      "ts": "2026-10-14T09:56:50.833Z",
+      "type": "plugin.loaded",
+      "scope": {
+        "plugin": "skill-templates"
+      },
+      "payload": {
+        "name": "skill-templates",
+        "version": "0.1.0"
+      }
+    },
+    {
+      "event_id": "evt_8",
+      "seq": 8,
+      "ts": "2026-10-14T09:56:50.834Z",
+      "type": "plugin.loaded",
+      "scope": {
+        "plugin": "mcp-bridge"
+      },
+      "payload": {
+        "name": "mcp-bridge",
+        "version": "0.1.0"
+      }
+    },
+    {
+      "event_id": "evt_9",
+      "seq": 9,
+      "ts": "2026-10-14T09:56:50.949Z",
+      "type": "session.created",
+      "scope": {
+        "session": "s_mv7xqyklavtm"
+      },
+      "payload": {
+        "id": "s_mv7xqyklavtm"
+      }
+    },
+    {
+      "event_id": "evt_10",
+      "seq": 10,
+      "ts": "2026-10-14T09:56:50.949Z",
+      "type": "turn.started",
+      "scope": {
+        "session": "s_mv7xqyklavtm",
+        "turn": "t_mv7xqyklhhf7"
+      },
+      "payload": {
+        "goal": "mcp_greet 小红"
+      }
+    },
+    {
+      "event_id": "evt_11",
+      "seq": 11,
+      "ts": "2026-10-14T09:56:50.949Z",
+      "type": "step.started",
+      "scope": {
+        "session": "s_mv7xqyklavtm",
+        "turn": "t_mv7xqyklhhf7",
+        "step": "t_mv7xqyklhhf7:st1"
+      },
+      "payload": {
+        "type": "act",
+        "index": 0,
+        "goal": "mcp_greet 小红"
+      }
+    },
+    {
+      "event_id": "evt_12",
+      "seq": 12,
+      "ts": "2026-10-14T09:56:50.949Z",
+      "type": "step.llm.requested",
+      "scope": {
+        "session": "s_mv7xqyklavtm",
+        "turn": "t_mv7xqyklhhf7",
+        "step": "t_mv7xqyklhhf7:st1"
+      },
+      "payload": {
+        "goal": "mcp_greet 小红"
+      }
+    },
+    {
+      "event_id": "evt_13",
+      "seq": 13,
+      "ts": "2026-10-14T09:56:50.950Z",
+      "type": "step.llm.completed",
+      "scope": {
+        "session": "s_mv7xqyklavtm",
+        "turn": "t_mv7xqyklhhf7",
+        "step": "t_mv7xqyklhhf7:st1"
+      },
+      "payload": {
+        "content": "调用 mcp_greet",
+        "action": {
+          "type": "tool",
+          "name": "mcp_greet",
+          "input": {
+            "name": "小红"
+          }
+        },
+        "tokens": 5
+      }
+    },
+    {
+      "event_id": "evt_14",
+      "seq": 14,
+      "ts": "2026-10-14T09:56:50.950Z",
+      "type": "step.tool.calling",
+      "scope": {
+        "session": "s_mv7xqyklavtm",
+        "turn": "t_mv7xqyklhhf7",
+        "step": "t_mv7xqyklhhf7:st1"
+      },
+      "payload": {
+        "type": "tool",
+        "name": "mcp_greet",
+        "input": {
+          "name": "小红"
+        }
+      }
+    },
+    {
+      "event_id": "evt_15",
+      "seq": 15,
+      "ts": "2026-10-14T09:56:50.950Z",
+      "type": "step.tool.completed",
+      "scope": {
+        "session": "s_mv7xqyklavtm",
+        "turn": "t_mv7xqyklhhf7",
+        "step": "t_mv7xqyklhhf7:st1"
+      },
+      "payload": {
+        "call": {
+          "type": "tool",
+          "name": "mcp_greet",
+          "input": {
+            "name": "小红"
+          }
+        },
+        "result": {
+          "ok": true,
+          "value": "你好，小红！来自真实 MCP 服务器。"
+        }
+      }
+    },
+    {
+      "event_id": "evt_16",
+      "seq": 16,
+      "ts": "2026-10-14T09:56:50.950Z",
+      "type": "step.completed",
+      "scope": {
+        "session": "s_mv7xqyklavtm",
+        "turn": "t_mv7xqyklhhf7",
+        "step": "t_mv7xqyklhhf7:st1"
+      },
+      "payload": {
+        "outcome": "tool-done"
+      }
+    },
+    {
+      "event_id": "evt_17",
+      "seq": 17,
+      "ts": "2026-10-14T09:56:50.950Z",
+      "type": "step.started",
+      "scope": {
+        "session": "s_mv7xqyklavtm",
+        "turn": "t_mv7xqyklhhf7",
+        "step": "t_mv7xqyklhhf7:st2"
+      },
+      "payload": {
+        "type": "act",
+        "index": 1,
+        "goal": "mcp_greet 小红"
+      }
+    },
+    {
+      "event_id": "evt_18",
+      "seq": 18,
+      "ts": "2026-10-14T09:56:50.950Z",
+      "type": "step.llm.requested",
+      "scope": {
+        "session": "s_mv7xqyklavtm",
+        "turn": "t_mv7xqyklhhf7",
+        "step": "t_mv7xqyklhhf7:st2"
+      },
+      "payload": {
+        "goal": "mcp_greet 小红"
+      }
+    },
+    {
+      "event_id": "evt_19",
+      "seq": 19,
+      "ts": "2026-10-14T09:56:50.950Z",
+      "type": "step.llm.completed",
+      "scope": {
+        "session": "s_mv7xqyklavtm",
+        "turn": "t_mv7xqyklhhf7",
+        "step": "t_mv7xqyklhhf7:st2"
+      },
+      "payload": {
+        "content": "计算完成：你好，小红！来自真实 MCP 服务器。",
+        "action": {
+          "type": "finish"
+        },
+        "tokens": 12
+      }
+    },
+    {
+      "event_id": "evt_20",
+      "seq": 20,
+      "ts": "2026-10-14T09:56:50.950Z",
+      "type": "step.completed",
+      "scope": {
+        "session": "s_mv7xqyklavtm",
+        "turn": "t_mv7xqyklhhf7",
+        "step": "t_mv7xqyklhhf7:st2"
+      },
+      "payload": {
+        "outcome": "finish"
+      }
+    },
+    {
+      "event_id": "evt_21",
+      "seq": 21,
+      "ts": "2026-10-14T09:56:50.950Z",
+      "type": "turn.completed",
+      "scope": {
+        "session": "s_mv7xqyklavtm",
+        "turn": "t_mv7xqyklhhf7"
+      },
+      "payload": {
+        "result": "计算完成：你好，小红！来自真实 MCP 服务器。"
+      }
+    }
+  ]
+}

@@ -74,8 +74,16 @@ function importModel(sourcePath, destBasePath) {
 
     // 为每个模型创建独立的导入记录
     const importedModels = [];
+    const skippedExisting = [];
 
     for (const modelValidation of allModels) {
+      // ★ 同名模型已导入则跳过，不重复安装
+      const modelName = modelValidation.name || path.basename(sourceDir);
+      if (modelRegistry.some(m => m.name === modelName)) {
+        skippedExisting.push(modelName);
+        continue;
+      }
+
       const modelId = crypto.randomUUID();
       const destDir = path.join(destBasePath, modelId);
       fs.mkdirSync(destDir, { recursive: true });
@@ -117,11 +125,16 @@ function importModel(sourcePath, destBasePath) {
 
     saveRegistry();
 
+    // 全部同名已存在，没有实际导入
+    if (importedModels.length === 0) {
+      return { success: true, skipped: true, skippedNames: skippedExisting, data: null, models: [], count: 0, detail: '以下模型已导入过，跳过：' + skippedExisting.join('、') };
+    }
+
     // 兼容旧接口：返回 data 为单个模型（如果只有一个）或数组
     if (importedModels.length === 1) {
-      return { success: true, data: importedModels[0], models: importedModels };
+      return { success: true, data: importedModels[0], models: importedModels, skippedNames: skippedExisting.length ? skippedExisting : undefined };
     }
-    return { success: true, data: importedModels[0], models: importedModels, count: importedModels.length };
+    return { success: true, data: importedModels[0], models: importedModels, count: importedModels.length, skippedNames: skippedExisting.length ? skippedExisting : undefined };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -132,6 +145,12 @@ function importModel(sourcePath, destBasePath) {
 // comboModels 记录所有部件路径。这样在模型列表里它是一个整体、可整体选择/加载。
 function importComboModel(sourcePath, destBasePath, mmdValidations) {
   try {
+    // ★ 同名组合模型已导入则跳过
+    const comboName = path.basename(sourcePath) + '（组合）';
+    if (modelRegistry.some(m => m.name === comboName)) {
+      return { success: true, skipped: true, data: null, models: [], count: 0, detail: '该组合模型已导入过，跳过：' + comboName };
+    }
+
     const modelId = crypto.randomUUID();
     const destDir = path.join(destBasePath, modelId);
     fs.mkdirSync(destDir, { recursive: true });

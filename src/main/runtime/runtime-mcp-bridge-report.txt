@@ -1,0 +1,22 @@
+================ 浮灵饰界 · 真实 MCP 端到端（运行时 ↔ mcpManager） ================
+
+--- [1] 启动真实 MCP 服务器 ---
+  startServer(sample): 成功
+
+--- [2] mcpManager 收集工具 → 注册进运行时 ---
+  mcpManager 收集 2 个工具，注册进运行时 2 个: mcp_greet, mcp_capital
+  运行时 tool.registry: calc, time, echo, mcp_greet, mcp_capital
+
+--- [3] 直接调用真实 MCP 工具 mcp_greet（经 tool.execute） ---
+  结果: {"ok":true,"value":"你好，小明！来自真实 MCP 服务器。"}
+
+--- [4] 模型驱动调用 mcp_greet（经 ReAct 主循环，写事件日志） ---
+  目标「mcp_greet 小红」→ status=completed, result=计算完成：你好，小红！来自真实 MCP 服务器。
+  Step 事件: done[calls=mcp_greet] → done[calls=]
+
+--- [5] 钩子横切：guard 可拦截 mcp 工具 ---
+  拦截 mcp_capital: 是（策略拦截：工具 "mcp_capital" 被禁用）
+
+--- [6] 清理与统计 ---
+  已停止服务器并清理临时配置
+  总事件 21 条，可导出供回放调试台查看

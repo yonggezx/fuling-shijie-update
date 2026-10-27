@@ -1,0 +1,46 @@
+================ 浮灵饰界 · 下载后调用 符合性验证 v2 ================
+
+--- [0] 商店中已下载的插件包 ---
+  agent-reviewer  (agent)  智能体插件：注册 reviewer 审阅子智能体（独立 Session 执行）
+  mcp-tool-weather  (tool)  MCP 工具插件：注册 weather 工具（模拟 MCP 远程调用）
+  skill-writer  (skill)  技能插件：注册 write.summary 摘要技能，供 Agent 按需调用
+
+--- 装配（加载）三类已下载插件 ---
+  已加载: skill-writer
+  已加载: mcp-tool-weather
+  已加载: agent-reviewer
+
+--- [1] 模型驱动调用【下载的 MCP 工具】weather（经 ReAct 主循环） ---
+  当前已注册工具: calc, time, echo, weather
+  目标「天气 郑州」→ status=completed, result=计算完成：天气(郑州)：晴 25°C（MCP 模拟数据）
+  该 Turn 事件: done[calls=weather] → done[calls=]
+
+--- [2] 调用已下载的【技能】 write.summary（经 skill.registry） ---
+  可用 Skill: math.multi-compute, write.summary
+  调用结果: 要点总结：可回放、可调试、可热插拔
+
+--- [3] 调用已下载的【智能体】 reviewer（经 agent.registry，独立 Session） ---
+  审阅结果: 计算完成：7（独立 session=s_mv7xqydm9tyl, status=completed）
+
+--- [4] 横切验证：下载工具过钩子（guard 动态拦截 weather） ---
+  guard 策略: 禁用 delete-everything, weather
+  再次运行「天气 郑州」→ status=failed, error=策略拦截：工具 "weather" 被禁用（模型仍会调用，但被钩子拦截）
+
+--- [5] 热卸载：卸载 mcp-tool-weather 后，模型不再感知该工具 ---
+  卸载后可用工具: calc, time, echo
+  卸载后再跑「天气 广州」→ （mock 模型）无法处理目标：天气 广州（当前可用工具：calc, time, echo）
+
+--- [6] 事件回放统计 ---
+  总事件 52 条，独立 Session 4 个，工具调用事件 3 条
+  导出的示例事件已更新 → ui/sample-events.json（可用回放调试台查看）
+
+================ 符合性评估（对照设计需求） ================
+  [PASS] 一切皆插件 / 可热插拔：skill/mcp/agent 均为插件，load/unload 生效；卸载后模型不再感知该工具
+  [PASS] 服务契约通信：经 skill.registry / tool.registry / agent.registry 调用，不紧耦合
+  [PASS] 模型所见 = 日志内容（能力插件化）：模型动态读 tool.registry，下载工具注册后即可被模型调用
+  [PASS] 事件日志记录一切：模型驱动调用产生 turn/step/tool 事件，可回放、可导出
+  [PASS] 事件钩子横切生效：下载的 weather 工具同样过 step.tool.before，guard 可动态拦截
+  [PASS] 编排：独立 Session：reviewer 智能体在独立 Session 执行
+
+结论：下载的 Skill / MCP 工具 / 智能体均可被运行时调用，且能被模型动态感知、
+经主循环执行、受钩子管辖、卸载即失效——与设计需求（插件化 + 服务契约 + 事件日志 + 钩子 + 编排）一致。

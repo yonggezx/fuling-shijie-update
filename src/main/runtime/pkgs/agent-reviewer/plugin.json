@@ -1,0 +1,7 @@
+{
+  "name": "agent-reviewer",
+  "version": "0.1.0",
+  "kind": "agent",
+  "description": "智能体插件：注册 reviewer 审阅子智能体（独立 Session 执行）",
+  "entry": "index.js"
+}

@@ -264,7 +264,23 @@ async function installSkill(it) {
 
   if (src.kind === 'inline') {
     const md = src.skillMd || ('# ' + it.name + '\n\n' + (it.description || ''));
-    fs.writeFileSync(path.join(target, 'SKILL.md'), md, 'utf8');
+    // ★ 魔搭 catalog 的 inline 通常只是空壳描述，frontmatter 里 source 指向 GitHub 仓库。
+    //   如果能解析出 GitHub tree URL，自动从仓库拉完整目录（含所有脚本/资源）。
+    const ghMatch = md.match(/github\.com\/([^/\s]+)\/([^/\s]+)\/tree\/([^/\s]+)\/(.+)/);
+    if (ghMatch) {
+      const repo = ghMatch[1] + '/' + ghMatch[2];
+      const branch = ghMatch[3];
+      const dirPath = ghMatch[4].trim().replace(/[)\s]+$/, '');
+      try {
+        console.log('[Market] inline 技能检测到 GitHub 来源，拉取完整目录:', repo, dirPath);
+        await fetchRepoDir(repo, dirPath, target, branch);
+      } catch (e) {
+        console.warn('[Market] GitHub 目录拉取失败，回退到 inline 空壳:', e.message);
+        fs.writeFileSync(path.join(target, 'SKILL.md'), md, 'utf8');
+      }
+    } else {
+      fs.writeFileSync(path.join(target, 'SKILL.md'), md, 'utf8');
+    }
   } else if (src.kind === 'github') {
     // 技能通常是单文件 SKILL.md；若 path 指向目录，尝试 zip 拉整目录。
     if (/\.md$/i.test(src.path)) {

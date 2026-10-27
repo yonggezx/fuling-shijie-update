@@ -1,0 +1,7 @@
+{
+  "name": "skill-writer",
+  "version": "0.1.0",
+  "kind": "skill",
+  "description": "技能插件：注册 write.summary 摘要技能，供 Agent 按需调用",
+  "entry": "index.js"
+}

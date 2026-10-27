@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="zh-CN" style="margin:0;padding:0;">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>浮灵饰界 · 事件回放调试台</title>
+<style>
+  :root{
+    --bg:#0f1420; --panel:#171e2e; --panel2:#1d2637; --line:#2a3550;
+    --text:#e6ecf5; --dim:#8b97ad; --accent:#4f8cff; --ok:#3ecf8e; --warn:#ffb347; --err:#ff6b6b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;font-size:14px}
+  header{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:12px 16px;background:linear-gradient(90deg,#1a2440,#10141f);border-bottom:1px solid var(--line)}
+  header h1{font-size:17px;margin:0;font-weight:700}
+  .stats{font-size:12px;color:var(--dim)}
+  .stats b{color:var(--text)}
+  .spacer{flex:1}
+  button{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer}
+  button:hover{border-color:var(--accent)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  select{background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-size:13px}
+  main{display:grid;grid-template-columns:minmax(300px,380px) 1fr;gap:12px;padding:12px}
+  @media(max-width:820px){ main{grid-template-columns:1fr} }
+  section{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
+  section>h2{margin:0;padding:10px 14px;font-size:13px;font-weight:700;color:var(--dim);border-bottom:1px solid var(--line);letter-spacing:.5px}
+  .scroll{overflow:auto;flex:1;min-height:0}
+  ul{list-style:none;margin:0;padding:0}
+  .tree-item{padding:6px 14px;cursor:pointer;border-left:3px solid transparent}
+  .tree-item:hover{background:var(--panel2)}
+  .tree-item.active{border-left-color:var(--accent);background:var(--panel2)}
+  .tree-item .sess{font-size:12px;color:var(--dim)}
+  .tree-item .turn{display:flex;align-items:center;gap:8px}
+  .badge{font-size:11px;padding:1px 8px;border-radius:10px;font-weight:600}
+  .b-completed{background:rgba(62,207,142,.16);color:var(--ok)}
+  .b-failed{background:rgba(255,107,107,.16);color:var(--err)}
+  .b-paused{background:rgba(255,179,71,.16);color:var(--warn)}
+  .b-running{background:rgba(79,140,255,.16);color:var(--accent)}
+  .b-pending,.b-cancelled{background:rgba(139,151,173,.16);color:var(--dim)}
+  .kv{padding:10px 14px}
+  .kv .row{display:flex;gap:8px;padding:3px 0;font-size:13px}
+  .kv .k{color:var(--dim);min-width:74px;flex:none}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{text-align:left;padding:5px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:600}
+  /* 时间线 */
+  .ev{display:flex;gap:8px;padding:5px 14px;border-left:3px solid transparent;font-size:12.5px;cursor:pointer}
+  .ev:hover{background:var(--panel2)}
+  .ev.hl{background:rgba(79,140,255,.14);border-left-color:var(--accent)}
+  .ev .seq{color:var(--dim);min-width:38px;text-align:right;flex:none}
+  .ev .type{color:var(--accent);font-family:ui-monospace,Consolas,monospace;flex:none}
+  .ev .meta{color:var(--dim)}
+  .ev .pay{color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .playbar{display:flex;align-items:center;gap:8px;padding:8px 14px;border-top:1px solid var(--line);background:var(--panel2)}
+  .playbar label{font-size:12px;color:var(--dim)}
+  .tip{color:var(--dim);font-size:12px;padding:14px;text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <h1>浮灵饰界 · 事件回放调试台</h1>
+  <span class="stats" id="stats">未载入</span>
+  <span class="spacer"></span>
+  <input type="file" id="file" accept=".json,application/json" style="display:none">
+  <button id="btnLoad">载入 JSON</button>
+  <button id="btnSample">载入示例</button>
+</header>
+
+<main>
+  <!-- 左：会话/任务 + 折叠状态 -->
+  <section>
+    <h2>会话与任务（折叠自事件日志）</h2>
+    <div class="scroll"><ul id="tree"><li class="tip">载入事件日志后显示 Session → Turn 树</li></ul></div>
+    <h2 style="border-top:1px solid var(--line)">当前 Turn · 折叠状态</h2>
+    <div class="scroll" id="stateBox"><div class="tip">选择左侧某个 Turn 查看其由事件流折叠重建的状态</div></div>
+  </section>
+
+  <!-- 右：事件时间线（回放） -->
+  <section>
+    <h2>事件时间线（回放）</h2>
+    <div class="scroll"><ul id="timeline"><li class="tip">逐事件回放：播放 / 单步 / 跳转 Turn</li></ul></div>
+    <div class="playbar">
+      <button id="btnPlay" class="primary">▶ 播放</button>
+      <button id="btnStep">⏭ 单步</button>
+      <button id="btnReset">↺ 重置</button>
+      <label>速度 <select id="speed">
+        <option value="1">1×</option><option value="2" selected>2×</option><option value="5">5×</option>
+      </select></label>
+    </div>
+  </section>
+</main>
+
+<script>
+(function(){
+  'use strict';
+  var log = { exportedAt:null, events:[] };
+  var turns = [];          // 折叠出的全部 Turn
+  var current = null;       // 当前选中的 turn 对象
+  var timer = null, idx = 0;
+
+  var $ = function(id){ return document.getElementById(id); };
+
+  /* ---------- 折叠：状态 = 日志的纯函数 ---------- */
+  function foldTurn(events, turnId){
+    var t = { id:turnId, status:'pending', goal:null, result:null, error:null, steps:[] };
+    var cur = null;
+    for (var i=0;i<events.length;i++){
+      var e = events[i], sc = e.scope||{};
+      if (sc.turn !== turnId) continue;
+      switch(e.type){
+        case 'turn.started': t.status='running'; t.goal=e.payload.goal; break;
+        case 'turn.paused': t.status='paused'; break;
+        case 'turn.resumed': t.status='running'; break;
+        case 'turn.forked': t.forkedFrom=e.payload.from; break;
+        case 'turn.completed': t.status='completed'; t.result=e.payload.result; break;
+        case 'turn.failed': t.status='failed'; t.error=e.payload.error; break;
+        case 'turn.cancelled': t.status='cancelled'; break;
+        case 'step.started': cur={id:sc.step,status:'running',type:e.payload.type,tool_calls:[],tool_results:[]}; t.steps.push(cur); break;
+        case 'step.llm.completed': if(cur) cur.output=e.payload.content; break;
+        case 'step.tool.calling': if(cur){cur.tool_calls.push(e.payload); cur.status='tool_calling';} break;
+        case 'step.tool.completed': if(cur){cur.tool_results.push(e.payload.result); cur.status='tool_done';} break;
+        case 'step.tool.failed': if(cur){cur.error=e.payload.error; cur.status='tool_failed';} break;
+        case 'step.completed': if(cur) cur.status='done'; break;
+        case 'step.skipped': if(cur) cur.status='skipped'; break;
+        case 'step.failed': if(cur){cur.status='failed'; cur.error=e.payload.error;} break;
+      }
+    }
+    return t;
+  }
+  function buildModel(events){
+    var seen=new Set(); turns=[];
+    for (var i=0;i<events.length;i++){
+      var t=(events[i].scope||{}).turn;
+      if(t && !seen.has(t)){ seen.add(t); turns.push(foldTurn(events,t)); }
+    }
+    turns.sort(function(a,b){ return a.id < b.id ? -1 : 1; });
+  }
+
+  /* ---------- 渲染 ---------- */
+  function badge(status){ return '<span class="badge b-'+status+'">'+status+'</span>'; }
+
+  function renderTree(){
+    var ul=$('tree'); ul.innerHTML='';
+    if(turns.length===0){ ul.innerHTML='<li class="tip">无 Turn</li>'; return; }
+    var bySess={};
+    // 按 session 分组
+    var groups={};
+    log.events.forEach(function(e){ var sc=e.scope||{}; if(sc.session && sc.turn){ (groups[sc.session] = groups[sc.session]||[]); } });
+    // 简单起见：列出每个 turn，标注 session
+    var currentSess=null;
+    turns.forEach(function(t){
+      var sess = null;
+      for (var i=0;i<log.events.length;i++){ var sc=log.events[i].scope||{}; if(sc.turn===t.id){ sess=sc.session; break; } }
+      if(sess!==currentSess){ currentSess=sess; var li=document.createElement('li'); li.className='tree-item sess'; li.textContent='Session '+sess; ul.appendChild(li); }
+      var li=document.createElement('li'); li.className='tree-item'+(current&&current.id===t.id?' active':'');
+      li.innerHTML='<div class="turn"><span>'+badge(t.status)+'</span><span>'+esc(t.goal||t.id)+'</span></div>';
+      li.onclick=function(){ select(t); };
+      ul.appendChild(li);
+    });
+  }
+  function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+
+  function renderState(){
+    var box=$('stateBox');
+    if(!current){ box.innerHTML='<div class="tip">选择左侧某个 Turn</div>'; return; }
+    var t=current;
+    var html='<div class="kv">'
+      +'<div class="row"><span class="k">Turn</span><span>'+esc(t.id)+'</span></div>'
+      +'<div class="row"><span class="k">状态</span><span>'+badge(t.status)+'</span></div>'
+      +'<div class="row"><span class="k">目标</span><span>'+esc(t.goal)+'</span></div>'
+      +(t.forkedFrom?'<div class="row"><span class="k">Fork自</span><span>'+esc(t.forkedFrom)+'</span></div>':'')
+      +'<div class="row"><span class="k">结果</span><span>'+esc(t.result||t.error||'-')+'</span></div>'
+      +'</div>';
+    html+='<table><tr><th>Step</th><th>状态</th><th>工具调用</th><th>结果</th></tr>';
+    t.steps.forEach(function(s){
+      html+='<tr><td>'+esc(s.id)+'</td><td>'+badge(s.status)+'</td><td>'+s.tool_calls.length+'</td><td>'+
+        (s.tool_results.length?esc(JSON.stringify(s.tool_results[0])):esc(s.output?s.output.slice(0,40):'-'))+'</td></tr>';
+    });
+    html+='</table>';
+    box.innerHTML=html;
+  }
+
+  function turnEvents(t){
+    return log.events.filter(function(e){ return (e.scope||{}).turn===t.id; });
+  }
+  function paySummary(e){
+    var p=e.payload||{}, s=JSON.stringify;
+    switch(e.type){
+      case 'step.llm.completed': return p.content?s(p.content).slice(0,60):'';
+      case 'step.tool.calling': return p.name? '调用 '+p.name+' '+s(p.input||{}):'';
+      case 'step.tool.completed': return s(p.result);
+      case 'step.tool.failed': return s(p.error);
+      case 'step.completed': return 'outcome='+p.outcome;
+      default: return '';
+    }
+  }
+  function renderTimeline(){
+    var ul=$('timeline');
+    if(!current){ ul.innerHTML='<li class="tip">选择左侧某个 Turn 后回放其事件</li>'; return; }
+    var evs=turnEvents(current);
+    if(evs.length===0){ ul.innerHTML='<li class="tip">该 Turn 无事件</li>'; return; }
+    ul.innerHTML='';
+    evs.forEach(function(e){
+      var li=document.createElement('li'); li.className='ev'; li.setAttribute('data-seq',e.seq);
+      li.innerHTML='<span class="seq">'+e.seq+'</span><span class="type">'+e.type+'</span>'
+        +'<span class="meta">'+esc((e.scope.step||''))+'</span>'
+        +'<span class="pay">'+esc(paySummary(e))+'</span>';
+      li.onclick=function(){ playTo(evs, e.seq); };
+      ul.appendChild(li);
+    });
+  }
+
+  /* ---------- 回放控制 ---------- */
+  function stop(){ if(timer){ clearInterval(timer); timer=null; } }
+  function clearHL(){ var rows=$('timeline').querySelectorAll('.ev.hl'); for(var i=0;i<rows.length;i++) rows[i].classList.remove('hl'); }
+  function markHL(seq){
+    clearHL();
+    var rows=$('timeline').querySelectorAll('.ev');
+    for(var i=0;i<rows.length;i++){ if(Number(rows[i].getAttribute('data-seq'))===seq){ rows[i].classList.add('hl'); rows[i].scrollIntoView({block:'nearest'}); break; } }
+  }
+  function playTo(evs, seq){ stop(); var i=evs.findIndex(function(e){return e.seq===seq;}); if(i>=0){ idx=i; markHL(seq); } }
+  function play(){
+    if(!current) return;
+    stop();
+    var evs=turnEvents(current); if(evs.length===0) return;
+    var speed=Number($('speed').value);
+    idx = idx>=evs.length ? 0 : idx;
+    $('btnPlay').textContent='⏸ 暂停';
+    timer=setInterval(function(){
+      if(idx>=evs.length){ stop(); $('btnPlay').textContent='▶ 播放'; return; }
+      markHL(evs[idx].seq); idx++;
+    }, 600/speed);
+  }
+  function step(){
+    if(!current) return; stop();
+    var evs=turnEvents(current); if(idx>=evs.length){ idx=0; }
+    if(idx<evs.length){ markHL(evs[idx].seq); idx++; }
+    $('btnPlay').textContent='▶ 播放';
+  }
+  function reset(){ stop(); idx=0; clearHL(); $('btnPlay').textContent='▶ 播放'; }
+
+  function select(t){
+    stop(); current=t; idx=0; clearHL(); $('btnPlay').textContent='▶ 播放';
+    renderTree(); renderState(); renderTimeline();
+  }
+
+  /* ---------- 载入 ---------- */
+  function loadEvents(events){
+    if(!Array.isArray(events)) throw new Error('事件列表无效');
+    log.events=events;
+    buildModel(events);
+    // 统计
+    var sessions={};
+    events.forEach(function(e){ var sc=e.scope||{}; if(sc.session) sessions[sc.session]=1; });
+    $('stats').innerHTML='<b>'+Object.keys(sessions).length+'</b> 会话 · <b>'+turns.length+'</b> 任务 · <b>'+events.length+'</b> 事件';
+    if(turns.length) select(turns[0]);
+    else renderTree();
+  }
+  function parseJSON(text){
+    var data=JSON.parse(text);
+    if(Array.isArray(data)) return data;
+    if(data && Array.isArray(data.events)) return data.events;
+    throw new Error('JSON 需为事件数组或 { events:[...] }');
+  }
+
+  $('file').addEventListener('change', function(){
+    var f=this.files[0]; if(!f) return;
+    var r=new FileReader();
+    r.onload=function(){ try{ loadEvents(parseJSON(r.result)); }catch(e){ alert('载入失败: '+e.message); } };
+    r.readAsText(f,'utf-8');
+    this.value='';
+  });
+  $('btnLoad').onclick=function(){ $('file').click(); };
+  $('btnSample').onclick=function(){
+    fetch('sample-events.json').then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.text(); })
+      .then(function(t){ loadEvents(parseJSON(t)); })
+      .catch(function(e){
+        alert('无法自动载入示例（需通过本地服务器打开，或使用「载入 JSON」选择 sample-events.json）: '+e.message);
+      });
+  };
+  $('btnPlay').onclick=function(){ if($('btnPlay').textContent.indexOf('暂停')>=0){ stop(); $('btnPlay').textContent='▶ 播放'; } else play(); };
+  $('btnStep').onclick=step;
+  $('btnReset').onclick=reset;
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+================ 浮灵饰界 · 真实模型适配器（HTTP function-calling → 真实 MCP） ================
+运行时 tool.registry: calc, time, echo, mcp_greet, mcp_capital
+真实端点: http://127.0.0.1:59890/v1/chat/completions（最小 OpenAI 兼容服务器）
+
+--- [1] 真实 HTTP function-calling 驱动 mcp_greet ---
+  目标「mcp_greet 小红」→ status=completed
+  结果: 完成：mcp_greet 小红（工具结果：{"ok":true,"value":"你好，小红！来自真实 MCP 服务器。"}）
+  工具步骤: mcp_greet
+  真实 MCP 返回: {"ok":true,"value":"你好，小红！来自真实 MCP 服务器。"}
+
+--- [2] 无端点回退：停掉 HTTP 端点，仍驱动真实 MCP 工具 ---
+  目标「mcp_greet 回退」（端点已停）→ status=completed
+  结果: 完成：mcp_greet 回退（工具结果：{"ok":true,"value":"你好，回退！来自真实 MCP 服务器。"}）
+  工具步骤: mcp_greet
+
+--- [3] 清理 ---
+  已停止真实 MCP 服务器并清理临时配置
+  总事件 35 条，可导出供回放

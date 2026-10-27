@@ -17,6 +17,18 @@ if (process.platform === 'win32') {
   try { require('child_process').execSync('chcp 65001 >nul 2>&1', { stdio: 'ignore' }); } catch (_) {}
 }
 
+// ★ 插件化运行时（新架构骨架）：优雅接入，任何失败都不影响主应用启动
+try {
+  const runtimeApi = require('./runtime/bootstrap');
+  global.__runtime = runtimeApi;
+  runtimeApi.createRuntime().then((rt) => {
+    global.__runtimeBooted = rt;
+    console.log('[Runtime] 插件化运行时就绪 (Cordis + EventLog)');
+  }).catch((e) => console.error('[Runtime] 运行时启动失败（不影响主应用）:', e.message));
+} catch (e) {
+  console.error('[Runtime] 运行时接入失败（不影响主应用）:', e.message);
+}
+
 const FileOps = require('./ipc/fileOps');
 const CommandOps = require('./ipc/commandOps');
 const InstallOps = require('./ipc/installOps');
@@ -162,6 +174,32 @@ ipcMain.handle('system:optimize-memory', () => {
 
 let mainWindow = null;
 let petWindow = null;
+
+// ★ Windows 透明无边框窗口在调用 setIgnoreMouseEvents / setOpacity / setAlwaysOnTop
+//   等原生操作后可能发生异步位移（Electron/Windows 已知问题：窗口会从保存位置漂移）。
+//   统一用该辅助函数包裹这类操作：记录目标位置 → 执行 → 同步校验恢复，并延迟复核，
+//   防止「开启点击穿透后宠物窗口位置异常漂移、模型被裁切显示不全」。
+//   delayMs：0 表示只做同步校验（用于动态穿透这种频繁切换的场景）；
+//   其他值表示额外延迟复核的毫秒数（默认 80ms，用于离散的设置项切换）。
+function withPetPositionPreserved(apply, delayMs) {
+  if (!petWindow || petWindow.isDestroyed()) {
+    if (typeof apply === 'function') apply();
+    return;
+  }
+  const [px, py] = petWindow.getPosition();
+  if (typeof apply === 'function') apply();
+  const restore = () => {
+    if (!petWindow || petWindow.isDestroyed()) return;
+    const [ax, ay] = petWindow.getPosition();
+    if (ax !== px || ay !== py) petWindow.setPosition(px, py);
+  };
+  restore();
+  if (delayMs !== 0) {
+    const ms = (typeof delayMs === 'number' && delayMs > 0) ? delayMs : 80;
+    const t = setTimeout(restore, ms);
+    if (t && typeof t.unref === 'function') t.unref();
+  }
+}
 
 // 销毁宠物窗口并释放渲染进程（隐藏时调用，而不是仅 hide 占用内存）
 function destroyPetWindow() {
@@ -1272,7 +1310,16 @@ ipcMain.handle('pet:do-action', (_e, name) => {
 ipcMain.on('pet:set-ignore-mouse-events', (_e, { ignore, forward }) => {
 
   if (petWindow && !petWindow.isDestroyed()) {
-    petWindow.setIgnoreMouseEvents(ignore, { forward: forward !== false });
+    // ★ 进入穿透模式（ignore=true）时 Windows 透明窗口可能异步位移，
+    //   保持窗口位置，避免宠物漂移/被裁切；捕获模式（ignore=false，用于拖拽/菜单）
+    //   不做位置保持，防止打断拖拽。
+    if (ignore) {
+      withPetPositionPreserved(() => {
+        petWindow.setIgnoreMouseEvents(true, { forward: forward !== false });
+      }, 0); // 动态穿透切换频繁，仅做同步校验，不做延迟复核
+    } else {
+      petWindow.setIgnoreMouseEvents(false, { forward: forward !== false });
+    }
   }
 });
 
@@ -2503,7 +2550,12 @@ ipcMain.handle('pet:apply-settings', (_e, settings) => {
     if (typeof settings.clickThrough === 'boolean' && settings.clickThrough !== lastPetSettings.clickThrough) {
       // 开启完全穿透：不转发鼠标事件（forward:false），性能更好
       // 关闭穿透（动态穿透）：转发 mousemove 用于像素检测（forward:true）
-      petWindow.setIgnoreMouseEvents(true, { forward: !settings.clickThrough });
+      // ★ 修复：开启/关闭点击穿透时用 withPetPositionPreserved 保持窗口位置。
+      //   Windows 透明窗口在 setIgnoreMouseEvents 后可能异步位移，导致宠物位置漂移、
+      //   模型随窗口移出屏幕而被裁切显示不全。
+      withPetPositionPreserved(() => {
+        petWindow.setIgnoreMouseEvents(true, { forward: !settings.clickThrough });
+      });
       petWindow.webContents.send('pet:clickthrough', settings.clickThrough);
       lastPetSettings.clickThrough = settings.clickThrough;
     }
