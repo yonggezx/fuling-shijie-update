@@ -59,7 +59,7 @@
           ]
         }
       ],
-      "artifactName": "浮灵饰界_Setup_v${version}.exe",
+      "artifactName": "FulingShijie-Setup-v${version}.exe",
       "icon": "assets/icons/icon.ico",
       "requestedExecutionLevel": "asInvoker",
       "files": [
@@ -80,7 +80,8 @@
       ],
       "icon": "assets/icons",
       "category": "Utility",
-      "maintainer": "浮灵饰界"
+      "maintainer": "浮灵饰界",
+      "artifactName": "FulingShijie-v${version}.${ext}"
     },
     "mac": {
       "target": [
@@ -89,6 +90,7 @@
       ],
       "icon": "assets/icons/icon.icns",
       "category": "public.app-category.utilities",
+      "artifactName": "FulingShijie-v${version}-${arch}.${ext}",
       "identity": null,
       "hardenedRuntime": false
     },
