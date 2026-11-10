@@ -1,16 +1,25 @@
-# 🦊 浮灵饰界 · 智能桌面宠物助手
+<p align="center">
+  <img src="https://raw.githubusercontent.com/yonggezx/fuling-shijie-website/main/images/logo-pink.png" width="120" alt="浮灵饰界 logo">
+</p>
 
-> 一个常驻桌面的 AI 伙伴：以虚拟角色「灵汐」为核心，融合 Live2D / MMD 形象、本地与云端大模型、系统级操作能力，让桌面宠物不只是装饰，而是真能帮你做事的 AI 助手。
+<h1 align="center">浮灵饰界 · 智能桌面宠物助手</h1>
 
-![version](https://img.shields.io/badge/version-1.0.12-blue)
+<p align="center">
+  一个常驻桌面的 AI 伙伴：以虚拟角色「灵汐」为核心，融合 Live2D / MMD 形象、本地与云端大模型、系统级操作能力，让桌面宠物不只是装饰，而是真能帮你做事的 AI 助手。
+</p>
 
-![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
+<p align="center">
+  <img src="https://img.shields.io/badge/version-1.0.12-blue" alt="version">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="platform">
+  <img src="https://img.shields.io/badge/Electron-28-47848F?logo=electron&logoColor=white" alt="electron">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="license">
+</p>
 
-![electron](https://img.shields.io/badge/Electron-28-47848F?logo=electron&logoColor=white)
-
-![license](https://img.shields.io/badge/license-MIT-green)
-
-![release](https://img.shields.io/badge/release-GitHub%20Actions-2ea44f)
+<p align="center">
+  <a href="https://yonggezx.github.io/fuling-shijie-website/">🌐 官网</a> ·
+  <a href="https://github.com/yonggezx/fuling-shijie-update/releases/latest">📦 下载</a> ·
+  <a href="https://github.com/yonggezx/fuling-shijie-update/issues">🐛 反馈</a>
+</p>
 
 ---
 
