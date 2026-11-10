@@ -1,269 +1,246 @@
-# 浮灵饰界
+# 🦊 浮灵饰界 · 智能桌面宠物助手
 
-> 智能桌面宠物助手 · 让 AI 陪伴你的每一天
+> 一个常驻桌面的 AI 伙伴：以虚拟角色「灵汐」为核心，融合 Live2D / MMD 形象、本地与云端大模型、系统级操作能力，让桌面宠物不只是装饰，而是真能帮你做事的 AI 助手。
 
-浮灵饰界是一款基于 Electron 的 Windows 桌面宠物应用，以虚拟角色「灵汐」为核心，融合 Live2D / MMD 模型渲染、本地与云端 AI 对话、系统级操作助手等能力，让桌面宠物不再只是装饰，而是能真正帮你做事的 AI 伙伴。
+![version](https://img.shields.io/badge/version-1.0.12-blue)
 
-![版本](https://img.shields.io/badge/version-1.0.7-blue)
-![平台](https://img.shields.io/badge/platform-Windows%20x64-lightgrey)
-![许可证](https://img.shields.io/badge/license-MIT-green)
+![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
----
+![electron](https://img.shields.io/badge/Electron-28-47848F?logo=electron&logoColor=white)
 
-## 目录
+![license](https://img.shields.io/badge/license-MIT-green)
 
-- [功能特性](#功能特性)
-- [技术栈](#技术栈)
-- [目录结构](#目录结构)
-- [环境要求](#环境要求)
-- [快速开始](#快速开始)
-- [核心模块说明](#核心模块说明)
-- [配置说明](#配置说明)
-- [开源范围说明](#开源范围说明)
-- [许可证](#许可证)
+![release](https://img.shields.io/badge/release-GitHub%20Actions-2ea44f)
 
 ---
 
-## 功能特性
+## 📑 目录
+
+- [✨ 功能特性](#-功能特性)
+- [📸 截图](#-截图)
+- [📦 安装](#-安装)
+- [🚀 快速开始](#-快速开始)
+- [🤖 AI 配置](#-ai-配置)
+- [🐾 宠物交互](#-宠物交互)
+- [🧩 技术栈](#-技术栈)
+- [📁 项目结构](#-项目结构)
+- [🛠️ 开发](#️-开发)
+- [🤝 贡献](#-贡献)
+- [📄 开源范围说明](#-开源范围说明)
+- [📜 许可证](#-许可证)
+- [💖 致谢](#-致谢)
+
+---
+
+## ✨ 功能特性
 
 ### 🦊 桌面宠物
-- 基于 Live2D / MMD 模型的实时角色渲染，支持呼吸、眨眼、鼠标跟随、点击交互等动作
-- 宠物窗口置顶、透明背景、可拖拽移动，支持自定义模型导入
-- 角色情绪与状态联动，根据对话内容和系统状态产生反应
+
+- **实时角色渲染**：Live2D / MMD 双引擎，呼吸、眨眼、鼠标跟随、点击互动一应俱全。
+- **窗口体验**：置顶、透明背景、可拖拽移动，支持自定义模型导入与皮肤热加载。
+- **状态联动**：角色情绪随对话内容与系统状态变化，不只是静态贴图。
 
 ### 🤖 AI 对话助手
-- 兼容 OpenAI API 协议的云端 AI 服务，支持多提供商切换
-- 本地 AI 引擎集成，可在离线环境下运行本地大模型
-- 对话上下文记忆、角色设定、多轮对话管理
-- 流式输出、打字机效果、Markdown 渲染与代码高亮
+
+- **多提供商**：兼容 OpenAI 协议，云端服务可自由切换。
+- **本地推理**：集成本地 AI 引擎，离线环境也能跑本地大模型。
+- **对话体验**：上下文记忆、角色设定、多轮管理，流式输出 + 打字机效果 + Markdown 渲染与代码高亮。
 
 ### ⚙️ 系统级操作
-- 文件管理：浏览、复制、移动、删除文件
-- 命令执行：通过自然语言触发系统命令
-- 软件安装：自动检测并安装常用工具
-- 全局快捷键与鼠标监听，快速唤起宠物面板
+
+- **文件管理**：浏览、复制、移动、删除文件。
+- **命令执行**：用自然语言触发系统命令，权限可控。
+- **软件安装**：自动检测并安装常用工具。
+- **快捷唤起**：全局快捷键与鼠标监听，随时叫出宠物面板。
 
 ### 📋 效率工具
-- 待办事项管理（Todo）
-- 本地记忆存储，跨会话记住用户偏好
-- 模型管理器，统一配置本地与云端模型
-- 项目面板，快速切换工作上下文
+
+- 待办管理（Todo）、本地记忆存储、模型管理器、项目面板一应俱全。
 
 ### 🔄 自动更新
-- 基于 electron-updater 的增量与完整包更新
-- 更新公告弹窗，版本变更日志
-- 下载进度实时显示，支持断点续传
+
+- 基于 electron-updater 的增量补丁与完整包更新，更新公告弹窗、进度实时显示、断点续传。
 
 ### 🎨 任务栏集成
-- Windows 任务栏注入，实现宠物与开始菜单 / 飞行面板的视觉融合
-- 亚克力 / 透明效果适配
-- 任务栏图标与快捷操作
+
+- Windows 任务栏注入，宠物与开始菜单 / 飞行面板视觉融合，适配亚克力与透明效果。
 
 ---
 
-## 技术栈
+## 📸 截图
+
+| 主界面 | AI 对话 |
+| :---: | :---: |
+| ![主界面](https://raw.githubusercontent.com/yonggezx/fuling-shijie-website/main/images/main-window.png) | ![AI 对话](https://raw.githubusercontent.com/yonggezx/fuling-shijie-website/main/images/ai-chat.png) |
+
+| 宠物窗口 | 设置中心 |
+| :---: | :---: |
+| ![宠物窗口](https://raw.githubusercontent.com/yonggezx/fuling-shijie-website/main/images/pet-window.png) | ![设置中心](https://raw.githubusercontent.com/yonggezx/fuling-shijie-website/main/images/settings.png) |
+
+> 更多界面截图见 [官网](https://yonggezx.github.io/fuling-shijie-website/)。
+
+---
+
+## 📦 安装
+
+### 系统要求
+
+| 项目 | 要求 |
+| --- | --- |
+| 操作系统 | Windows 10 / 11（x64），macOS 12+，Ubuntu 22.04+ |
+| Node.js | ≥ 16（推荐 18+，仅源码运行需要） |
+| npm | ≥ 8 |
+| C++ 环境 | Visual Studio 2022 或 Build Tools + Windows SDK（仅编译任务栏注入 DLL 时需要） |
+
+### 下载预编译包
+
+前往 [Releases](https://github.com/yonggezx/fuling-shijie-update/releases/latest) 下载对应平台安装包，双击安装即可：
+
+| 平台 | 安装包 |
+| --- | --- |
+| Windows x64 | `FulingShijie-Setup-v1.0.12.exe` |
+| macOS Intel | `FulingShijie-v1.0.12-x64.dmg` |
+| macOS Apple Silicon | `FulingShijie-v1.0.12-arm64.dmg` |
+| Linux x64 | `FulingShijie-v1.0.12.AppImage` / `FulingShijie-v1.0.12.deb` |
+
+### 从源码运行
+
+```bash
+git clone https://github.com/yonggezx/fuling-shijie-update.git
+cd fuling-shijie-update
+npm install          # 安装依赖
+npm run dev          # 开发模式（含语法检查）
+```
+
+---
+
+## 🚀 快速开始
+
+1. 启动后宠物出现在桌面，拖拽即可移动位置。
+2. 通过托盘菜单 / 全局快捷键唤起主界面，进入「AI 对话」。
+3. 直接用自然语言下达指令，例如「帮我整理这个文件夹」「提醒我 3 点开会」。
+4. 在「设置 → AI」中填入模型 API Key（或接入本地模型）后，全部能力解锁。
+5. 需要更新时，应用内即可检查版本、下载完整包或增量补丁。
+
+---
+
+## 🤖 AI 配置
+
+在「设置 → AI」中配置提供商，支持云端（OpenAI 协议兼容）与本地引擎两种模式：
+
+| 字段 | 说明 | 默认值 |
+| --- | --- | --- |
+| `apiKey` | 大模型 API 密钥（本地模型可留空） | 无 |
+| `baseUrl` | 自定义 API 地址（兼容 OpenAI 协议） | 官方地址 |
+| `model` | 模型名，如 `gpt-4o-mini` / 本地 `gguf` 模型 | — |
+| `maxTokens` | 单次回复最大 token | 按提供商 |
+| `systemPrompt` | 角色「灵汐」的性格设定 | 内置人设 |
+| `enableTools` | 是否允许 Agent 调用本地工具 | `true` |
+
+> 🔒 密钥与对话记录仅保存在本地，不会上传服务器。
+
+---
+
+## 🐾 宠物交互
+
+| 操作 | 效果 |
+| --- | --- |
+| 拖拽宠物 | 移动位置，支持贴边停靠 |
+| 单击 | 随机动作 / 打招呼 |
+| 双击 | 打开主界面与对话面板 |
+| 右键 | 托盘菜单（设置 / 隐藏 / 退出） |
+| 长时间无交互 | 进入待机动画，降低资源占用 |
+
+---
+
+## 🧩 技术栈
 
 | 类别 | 技术 |
-|---|---|
+| --- | --- |
 | 应用框架 | Electron 28 |
 | 前端 | 原生 HTML5 / CSS3 / JavaScript（无框架） |
 | 2D 渲染 | PixiJS 6 + pixi-live2d-display |
 | 3D / MMD | Three.js（MMDLoader / MMDAnimationHelper） |
 | 原生交互 | koffi（FFI 调用 Windows API） |
+| 语音 | sherpa-onnx-node（本地语音识别） |
 | 数据存储 | 本地 JSON 配置 + Supabase（可选云端同步） |
-| 自动更新 | electron-updater |
+| 自动更新 | electron-updater（增量与完整包） |
 | 构建打包 | electron-builder 24 |
 | 任务栏注入 | C++（MinHook / Detours，需自行编译） |
-| 语言 | 中文 / 英文（i18n） |
+| 国际化 | 中文 / 英文（`data-i18n` 方案） |
 
 ---
 
-## 目录结构
+## 📁 项目结构
 
 ```
 .
 ├── src/
-│   ├── main/                  # 主进程
-│   │   ├── main.js            # 应用入口，窗口管理
-│   │   ├── preload.js         # 预加载脚本（在根目录）
-│   │   ├── configManager.js   # 配置管理
-│   │   ├── changelog.js       # 更新公告
-│   │   ├── globalKeyboard.js  # 全局快捷键
-│   │   ├── globalMouse.js     # 全局鼠标监听
-│   │   ├── taskbarTransparency.js  # 任务栏透明效果
-│   │   ├── waveInRecorder.js  # 音频录制
-│   │   ├── winreg.js          # 注册表操作
-│   │   ├── ipc/               # IPC 通信模块
-│   │   │   ├── aiOps.js           # AI 对话操作
-│   │   │   ├── localAiEngine.js   # 本地 AI 引擎
-│   │   │   ├── modelManager.js    # 模型管理
-│   │   │   ├── fileOps.js         # 文件操作
-│   │   │   ├── commandOps.js      # 命令执行
-│   │   │   ├── installOps.js      # 软件安装
-│   │   │   ├── todoStore.js       # 待办存储
-│   │   │   ├── memoryStore.js     # 记忆存储
-│   │   │   ├── updateOps.js       # 更新下载与安装
-│   │   │   ├── electronUpdater.js # electron-updater 封装
-│   │   │   ├── supabaseAuth.js    # Supabase 认证
-│   │   │   ├── crashGuard.js      # 崩溃守护
+│   ├── main/                     # 主进程
+│   │   ├── main.js               # 应用入口、窗口管理
+│   │   ├── configManager.js      # 配置管理
+│   │   ├── taskbarTransparency.js# 任务栏透明效果
+│   │   ├── ipc/                  # IPC 业务模块
+│   │   │   ├── aiOps.js          # AI 对话
+│   │   │   ├── localAiEngine.js  # 本地 AI 引擎
+│   │   │   ├── modelManager.js   # 模型管理
+│   │   │   ├── fileOps.js        # 文件操作
+│   │   │   ├── commandOps.js     # 命令执行
+│   │   │   ├── updateOps.js      # 更新下载与安装
 │   │   │   └── ...
-│   │   └── taskbar-inject/    # 任务栏注入（C++ 源码 + JS 客户端）
-│   │       ├── taskbarInject.cpp  # 注入器核心
-│   │       ├── explorerTap.cpp    # 资源管理器挂钩
-│   │       ├── taskbarInjector.js # JS 端注入控制
-│   │       ├── tapClient.js       # 注入通信客户端
-│   │       └── ...
-│   ├── renderer/              # 渲染进程
-│   │   ├── index.html         # 主界面
-│   │   ├── pet.html           # 宠物窗口
-│   │   ├── debug-log.html     # 调试日志窗口
-│   │   ├── css/style.css      # 全局样式
-│   │   ├── js/
-│   │   │   ├── app.js             # 主界面逻辑
-│   │   │   ├── mmdPet.js          # MMD 宠物渲染
-│   │   │   ├── mmdPreview.src.js  # 模型预览
-│   │   │   ├── i18n.js            # 国际化
-│   │   │   ├── icons.js           # 图标系统
-│   │   │   ├── dialog.js          # 对话框组件
-│   │   │   ├── visualEditor.js    # 可视化编辑器
-│   │   │   └── ...
-│   │   └── assets/            # 渲染进程资源
-│   └── preload.js             # 主预加载脚本
-├── scripts/                   # 构建与发布脚本
-│   ├── publish.js             # 发布主流程
-│   ├── build-patch.js         # 增量补丁构建
-│   ├── build-web-installer.js # 网页安装器构建
-│   ├── sync-update-to-github.js  # 更新文件同步到 GitHub
-│   ├── deploy-website.js      # 官网部署
-│   ├── setup-github-pages.js  # GitHub Pages 初始化
-│   ├── sync-website-version.js   # 官网版本同步
-│   └── test-update-network.js    # 更新网络测试
-├── assets/icons/              # 应用图标与品牌资源
+│   │   └── taskbar-inject/       # 任务栏注入（C++ 源码 + JS 客户端）
+│   ├── renderer/                 # 渲染进程
+│   │   ├── index.html            # 主界面
+│   │   ├── pet.html              # 宠物窗口
+│   │   └── js/                   # 界面逻辑（app / mmdPet / i18n / icons ...）
+│   └── preload.js
+├── scripts/                      # 构建、发布、部署与自检脚本
+├── assets/                       # 图标、渲染库与品牌资源
+├── .github/workflows/            # 跨平台发布流水线
 ├── package.json
-├── package-lock.json
 ├── LICENSE
-└── .gitignore
+└── README.md
 ```
 
 ---
 
-## 环境要求
+## 🛠️ 开发
 
-- **操作系统**：Windows 10 / 11（x64）
-- **Node.js**：≥ 16.0（推荐 18+）
-- **npm**：≥ 8.0
-- **C++ 编译环境**（仅编译任务栏注入 DLL 时需要）：Visual Studio 2022 或 Build Tools，Windows SDK
+```bash
+npm start            # 启动应用
+npm run dev          # 开发模式（语法检查 + 启动）
+npm run check        # 一组基础自检
+npm run build:win    # 打包 Windows 安装包（dist/）
+npm run build:linux  # 打包 Linux（AppImage / deb）
+npm run build:mac    # 打包 macOS（dmg / zip）
+```
+
+- **代码自检**：`npm run check:agent-config`、`check:mcp`、`check:connectors`、`check:marketplace` 覆盖配置、MCP、连接器与市场模块。
+- **任务栏注入 DLL**（可选）：源码位于 `src/main/taskbar-inject/`，需自行获取 MinHook / Detours 头文件后用 MSVC 编译。
+- **调试技巧**：开发模式下按 `F12` 打开开发者工具；宠物窗口透明 / 点击穿透异常时，优先检查 `transparent` 与 `skipTaskbar` 配置。
 
 ---
 
-## 快速开始
+## 🤝 贡献
 
-### 1. 克隆仓库
+欢迎 Issue 与 PR：
 
-```bash
-git clone https://github.com/yonggezx/fuling-shijie-update.git
-cd fuling-shijie-update
-```
+1. Fork 本仓库
+2. 新建分支 `git checkout -b feat/你的功能`
+3. 提交 `git commit -m 'feat: 新增 XX'`
+4. 推送并发起 Pull Request
 
-### 2. 安装依赖
-
-```bash
-npm install
-```
-
-### 3. 运行开发模式
-
-```bash
-npm run dev
-```
-
-或直接启动：
-
-```bash
-npm start
-```
-
-### 4. 构建 Windows 应用
-
-```bash
-# 构建未打包的目录版本（便于调试）
-npm run build:win-dir
-```
-
-构建产物输出到 `dist/` 目录。
-
-### 5. 编译任务栏注入 DLL（可选）
-
-任务栏注入功能需要编译 C++ 源码生成 DLL。源码位于 `src/main/taskbar-inject/`，依赖 MinHook 头文件。使用 Visual Studio 命令行或 `build.bat` 进行编译：
-
-```bash
-cd src/main/taskbar-inject
-# 使用 MSVC 编译（需安装 Visual Studio Build Tools）
-cl /LD /EHsc taskbarInject.cpp /link /OUT:taskbarInject.dll
-```
-
-> 注：MinHook 与 Detours 的完整第三方库源码未包含在本仓库中，需自行获取并配置头文件路径。
+提交前请确保本地自检通过；新增宠物形象请附带授权说明。
 
 ---
 
-## 核心模块说明
-
-### 主进程（`src/main/`）
-
-- **main.js**：应用生命周期管理，创建主窗口、宠物窗口、调试窗口，注册全局快捷键。
-- **configManager.js**：统一管理用户配置（AI 设置、模型、宠物、界面偏好），持久化到本地 JSON。
-- **ipc/aiOps.js**：AI 对话核心，处理消息发送、流式接收、上下文管理。
-- **ipc/localAiEngine.js**：本地大模型引擎封装，支持 llama.cpp 兼容接口。
-- **ipc/updateOps.js**：更新下载管理器，支持临时文件下载、校验、重命名、安装。
-- **ipc/fileOps.js / commandOps.js / installOps.js**：系统操作三件套，通过 IPC 暴露给渲染进程。
-
-### 渲染进程（`src/renderer/`）
-
-- **index.html + js/app.js**：主控制面板，包含对话、设置、待办、模型管理等界面。
-- **pet.html + js/mmdPet.js**：宠物窗口，基于 Three.js MMDLoader 渲染模型，处理交互动作。
-- **js/i18n.js**：中英文国际化，所有界面文案通过 `data-i18n` 属性绑定。
-- **js/icons.js**：SVG 图标系统，统一管理界面图标。
-
-### 任务栏注入（`src/main/taskbar-inject/`）
-
-- 通过 Windows 钩子将 DLL 注入资源管理器（explorer.exe），实现宠物与任务栏 / 开始菜单的视觉融合。
-- JS 端（`taskbarInjector.js`、`tapClient.js`）通过命名管道与注入的 DLL 通信。
-- 支持亚克力背景、透明效果、飞行面板交互等。
-
-### 构建发布（`scripts/`）
-
-- **publish.js**：一键发布流程，版本号管理、构建、打包、上传。
-- **build-patch.js**：生成增量更新补丁（基于文件差异）。
-- **sync-update-to-github.js**：将更新清单和安装包同步到 GitHub Releases / Pages。
-- **deploy-website.js**：部署官网到 GitHub Pages（需配置 `GITHUB_TOKEN` 环境变量）。
-
----
-
-## 配置说明
-
-首次运行后，应用会在用户目录下生成配置文件。主要配置项：
-
-| 配置项 | 说明 |
-|---|---|
-| `ai.providers` | AI 提供商列表（名称、API 地址、密钥、模型） |
-| `ai.activeProviderId` | 当前活跃的提供商 |
-| `pet.modelPath` | 当前使用的模型文件路径 |
-| `pet.scale` / `pet.position` | 宠物缩放与位置 |
-| `settings.language` | 界面语言（zh / en） |
-| `settings.theme` | 主题设置 |
-| `update.channel` | 更新通道（stable / beta） |
-
-API 密钥等敏感信息仅存储在本地，不会上传。
-
----
-
-## 开源范围说明
+## 📄 开源范围说明
 
 本仓库公开的是**应用核心源码**，包括：
 
 - ✅ 主进程与渲染进程的全部 JavaScript / HTML / CSS 源码
 - ✅ 任务栏注入的 C++ 源码与 JS 通信客户端
-- ✅ 构建、发布、部署脚本
+- ✅ 构建、发布、部署脚本与 CI 流水线
 - ✅ 应用图标与品牌资源
 - ✅ `package.json` / `package-lock.json` / 许可证
 
@@ -276,12 +253,19 @@ API 密钥等敏感信息仅存储在本地，不会上传。
 - ❌ 安全与激活相关模块
 - ❌ 用户协议与免责声明文案
 
-如需完整构建可运行的安装包，需在上述缺失模块的基础上自行补充。
+如需完整构建出可运行的安装包，需在上述缺失模块基础上自行补充。
 
 ---
 
-## 许可证
+## 📜 许可证
 
 本项目基于 [MIT 许可证](LICENSE) 开源。
 
 Copyright © 2026 浮灵饰界
+
+---
+
+## 💖 致谢
+
+- 灵感来自经典桌面宠物与各类 AI 助手项目
+- 感谢所有贡献者与使用者的支持
