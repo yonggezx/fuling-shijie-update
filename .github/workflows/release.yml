@@ -1,6 +1,6 @@
 name: 跨平台发布
 
-# 打 tag 触发：git tag v1.0.9 && git push origin v1.0.9
+# 打 tag 触发：git tag v1.0.13 && git push origin v1.0.13
 on:
   push:
     tags:
@@ -13,20 +13,34 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: 'npm'
+
       - name: 安装依赖
         run: npm ci
-      - name: 打包 Windows
+
+      # ★ 必须用 build:win（NSIS 安装器）。历史上这里误用过 build:win-dir，
+      #   产物只有 dist/win-unpacked 目录，Release 里就完全看不到可安装的 exe。
+      - name: 打包 Windows（NSIS 安装包）
         run: npm run build:win
-      - name: 创建 Release
-        id: create_release
+
+      - name: 校验产物（拒绝发布不可安装的产物）
+        shell: pwsh
+        run: |
+          Get-ChildItem dist | Format-Table Name, Length
+          $exe = Get-ChildItem dist -Filter *.exe -File | Where-Object { $_.Name -notmatch 'unpacked' }
+          if (-not $exe) { throw '打包失败：dist 下没有 .exe 安装包（只有 win-unpacked 目录不算），拒绝发布' }
+          foreach ($f in $exe) { Write-Host ("安装包: {0}  {1:N1} MB" -f $f.Name, ($f.Length / 1MB)) }
+          if (-not (Test-Path -LiteralPath 'dist/latest.yml')) { throw '缺少 dist/latest.yml：应用内自动更新（electron-updater）会失效' }
+          Write-Host '产物校验通过'
+
+      - name: 创建 Release 并上传 Windows 安装包
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
@@ -34,6 +48,34 @@ jobs:
           generate_release_notes: true
           files: |
             dist/*.exe
+            dist/*.blockmap
+            dist/*.yml
+
+      # 更新清单：客户端「检查更新 / 完整安装包」读的就是这两个文件，
+      # 必须指向本次 Release 真实存在的安装包名，否则会 404 或下到装不了的东西。
+      # 失败不影响已发布的安装包，但要显式报错提醒。
+      - name: 同步更新清单到 main 与 gh-pages
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -e
+          INSTALLER=$(ls dist/*.exe | head -n 1)
+          node scripts/sync-update-manifest.js --version="${{ github.ref_name }}" --installer="$INSTALLER"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for BR in main gh-pages; do
+            WT="$RUNNER_TEMP/wt-$BR"
+            rm -rf "$WT" || true
+            git worktree add "$WT" "origin/$BR" || { echo "::warning::分支 $BR 检出失败，跳过"; continue; }
+            mkdir -p "$WT/update" || true
+            cp update/*.json "$WT/update/"
+            ( cd "$WT" && git add update \
+              && if ! git diff --cached --quiet; then \
+                   git commit -m "chore(update): 同步更新清单到 ${{ github.ref_name }}"; \
+                   git push origin "HEAD:$BR"; \
+                 else echo "分支 $BR 清单无变化"; fi )
+            git worktree remove "$WT" --force || true
+          done
 
   build-linux:
     runs-on: ubuntu-latest
@@ -52,6 +94,10 @@ jobs:
         run: npm ci
       - name: 打包 Linux
         run: npm run build:linux
+      - name: 校验产物
+        run: |
+          ls -la dist
+          ls dist/*.AppImage dist/*.deb dist/*.yml >/dev/null
       - name: 上传到 Release
         uses: softprops/action-gh-release@v2
         with:
@@ -59,6 +105,7 @@ jobs:
           files: |
             dist/*.AppImage
             dist/*.deb
+            dist/*.yml
 
   build-macos:
     runs-on: macos-latest
@@ -73,6 +120,10 @@ jobs:
         run: npm ci
       - name: 打包 macOS
         run: npm run build:mac
+      - name: 校验产物
+        run: |
+          ls -la dist
+          ls dist/*.dmg dist/*.zip >/dev/null
       - name: 上传到 Release
         uses: softprops/action-gh-release@v2
         with:
@@ -80,10 +131,10 @@ jobs:
           files: |
             dist/*.dmg
             dist/*.zip
+            dist/*.yml
 
   # ===== 官网同步 =====
-  # 发布（打 v* tag）后，把官网 index.html 里的下载链接版本号
-  # （浮灵饰界_Setup_v*.exe、-*.dmg、-*.AppImage、APP_VERSION 等）更新为本次 tag 版本，
+  # 发布（打 v* tag）后，把官网 index.html 里的下载链接版本号更新为本次 tag 版本，
   # 并 push 到官网仓库 fuling-shijie-website。
   # 需要 GitHub Actions secret：WEBSITE_TOKEN（对 fuling-shijie-website 有写权限的 PAT）。
   sync-website:
