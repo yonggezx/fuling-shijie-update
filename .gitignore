@@ -112,6 +112,7 @@ scripts/*
 !scripts/build-web-installer.js
 !scripts/sync-update-to-github.js
 !scripts/sync-website-version.js
+!scripts/sync-update-manifest.js
 !scripts/check-agent-config.js
 !scripts/verify-agent-config-consumption.js
 !scripts/test-mcp.js
