@@ -1,6 +1,6 @@
 {
-  "version": "1.0.8",
-  "releaseDate": "2026-10-11",
-  "releaseNotes": "",
-  "tag": "v1.0.8"
+  "version": "1.0.12",
+  "releaseDate": "2026-10-27",
+  "releaseNotes": "v1.0.12\n\n1. 品牌统一为「浮灵饰界」，桌面角色名「灵汐」\n2. 安装包产物统一改为 ASCII 规范名（FulingShijie-Setup-v1.0.12.exe / -x64.dmg / .AppImage / .deb），修复官网点击下载 404\n3. 官网与仓库文档同步更新",
+  "tag": "v1.0.12"
 }
