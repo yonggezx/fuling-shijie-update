@@ -1,0 +1,11 @@
+appId: com.fuling.shijie.uninstaller
+productName: 浮灵饰界卸载器
+copyright: Copyright © 2026 浮灵饰界
+icon: icon.ico
+artifactName: ${productName}_v${version}.${ext}
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+  icon: icon.ico

@@ -6,9 +6,15 @@ node_modules_cache/
 dist/
 out/
 build/
-installer-app/
-installer-app/resources/app.7z
-installer-app/resources/uninstaller.exe
+# 安装器/卸载器工程：源码必须进仓库（CI 要用它构建自制安装页），
+# 但产物、依赖、内嵌安装资源不进仓库（体积大且每次构建重新生成）。
+installer-app/node_modules
+installer-app/dist/
+installer-app/resources/
+installer-app/icon.ico
+uninstaller-app/node_modules
+uninstaller-app/dist/
+uninstaller-app/icon.ico
 tools/**/bin/
 tools/**/obj/
 tools/nul
@@ -40,6 +46,7 @@ yarn-error.log*
 
 # Temp build artifacts
 _main_js_full.txt
+.release-notes.md
 _patch-tmp/
 *.fake-out.txt
 .fake-out.txt
@@ -48,8 +55,10 @@ _enum.js
 check_aiops.js
 
 # Data (user runtime data, models, caches — never commit)
-data/
-userData/
+# ⚠ 必须锚定到仓库根：写 `data/` 会连 src/renderer/data/ 一起忽略，
+#   导致关于页的更新公告 changelog.js/json、开发者名单不进仓库 → 打出来的包公告永远是旧的。
+/data/
+/userData/
 
 # Workbuddy local memory
 .workbuddy/
@@ -96,7 +105,6 @@ aiOps.js.bak-*
 
 # 其他项目 / 打包产物 / 更新包
 ai-lobster-website/
-uninstaller-app/
 update/
 dev-app-update.yml
 启动.bat
@@ -110,9 +118,13 @@ scripts/*
 !scripts/build-rdp-host.js
 !scripts/copy-build-resources.js
 !scripts/build-web-installer.js
+!scripts/export-release-notes.js
+!scripts/sync-changelog.js
 !scripts/sync-update-to-github.js
 !scripts/sync-website-version.js
 !scripts/sync-update-manifest.js
+!scripts/notarize-mac.js
+!scripts/gen-mac-assets.js
 !scripts/check-agent-config.js
 !scripts/verify-agent-config-consumption.js
 !scripts/test-mcp.js

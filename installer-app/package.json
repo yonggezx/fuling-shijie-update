@@ -1,0 +1,8 @@
+{
+  "name": "fuling-shijie-installer",
+  "description": "浮灵饰界 安装向导",
+  "main": "main.js",
+  "author": "浮灵饰界",
+  "license": "MIT",
+  "version": "1.0.12"
+}

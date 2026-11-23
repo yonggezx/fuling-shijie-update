@@ -59,7 +59,7 @@ if (!fs.existsSync(websitePath)) {
 
 // ---- 兜底用的规范资产名（与 package.json 的 artifactName 保持一致）----
 const FALLBACK = {
-  '.exe': `FulingShijie-Setup-v${NUM}.exe`,
+  '.exe': `FulingShijie-Installer-Setup-v${NUM}.exe`,
   '.dmg': `FulingShijie-v${NUM}-x64.dmg`,
   '.AppImage': `FulingShijie-v${NUM}.AppImage`,
 };

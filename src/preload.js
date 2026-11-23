@@ -481,7 +481,7 @@ contextBridge.exposeInMainWorld('api', {
     backupDelete: (name) => ipcRenderer.invoke('security:backup-delete', name)
   },
 
-  // ===== 连通器（需要授权的外部服务）=====
+  // ===== 连接器（需要授权的外部服务）=====
   connector: {
     list: () => ipcRenderer.invoke('connector:list'),
     authorize: (id, opts) => ipcRenderer.invoke('connector:authorize', id, opts || {}),

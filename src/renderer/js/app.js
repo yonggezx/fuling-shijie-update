@@ -13639,9 +13639,12 @@ function initRoleManagement() {
   setupMemoryPanel();
 
   // 角色选择按钮
-  document.getElementById('btn-role-select')?.addEventListener('click', () => {
+  // 每次打开都重新读一次角色列表：商城刚下载/删掉的智能体，不重启也能立刻出现在底部角色选择里
+  document.getElementById('btn-role-select')?.addEventListener('click', async () => {
     const panel = document.getElementById('role-select-panel');
-    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+    const willOpen = panel.style.display === 'none';
+    if (willOpen) await loadAgentRoles();
+    panel.style.display = willOpen ? 'block' : 'none';
   });
 
   // 关闭角色面板

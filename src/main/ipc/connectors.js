@@ -1,12 +1,12 @@
 /**
- * 连通器授权管理
+ * 连接器授权管理
  * ============================================================
  * 职责：管理「哪些外部服务需要用户授权才能用」，以及授权的发起/完成/断开。
  *
  * 与 MCP 的分工（MCP 见 src/main/mcp/）：
  *   MCP         → 起本机子进程，工具来自本地 server
- *   连通器      → 走 HTTP 请求访问外部账号，数据在别人服务器上
- * 所以连通器这一侧的**授权状态就是一切的前提**：没授权 = 工具调不通。
+ *   连接器      → 走 HTTP 请求访问外部账号，数据在别人服务器上
+ * 所以连接器这一侧的**授权状态就是一切的前提**：没授权 = 工具调不通。
  *
  * 安全设计：
  *   · **密钥只经 credentialStore（safeStorage/DPAPI）**，永不明文落盘、永不进 yaml、
@@ -193,7 +193,7 @@ function load() {
   if (!hit) {
     state.loaded = true;
     state.cfg = { connectors: [], authMethods: {} };
-    state.error = 'connectors.yaml 不存在，连通器功能不可用（不影响其他功能）';
+    state.error = 'connectors.yaml 不存在，连接器功能不可用（不影响其他功能）';
     return state.cfg;
   }
   try {
@@ -219,7 +219,7 @@ function getConnector(id) { load(); return state.byId.get(id) || null; }
 
 // ── 授权状态 ────────────────────────────────────────────────────────────────
 /**
- * 某个连通器是否已授权。
+ * 某个连接器是否已授权。
  * 判定标准：credentialStore 里能解出非空凭证。
  * safeStorage 不可用时 hasSecret 会返回 false → 显示"未连接"，符合"不静默明文"的取向。
  */
@@ -240,14 +240,14 @@ function isConnected(id) {
 }
 
 /**
- * 启用/停用一个连通器。
+ * 启用/停用一个连接器。
  * - kind: mcp → 联动 mcpManager.enabled 集合（真正起/停子进程）
  * - authMethod: none（builtin-web 等）→ 内存态标记（这类本来就恒可用，只是 UI 开关）
  * - 其余 OAuth 服务 → 不在这里做（启用=已授权，停用=disconnect 删凭证）
  */
 function setConnectorEnabled(id, enabled) {
   const def = getConnector(id);
-  if (!def) return { success: false, error: '未找到连通器: ' + id };
+  if (!def) return { success: false, error: '未找到连接器: ' + id };
 
   if (def.kind === 'mcp') {
     try {
@@ -267,7 +267,7 @@ function setConnectorEnabled(id, enabled) {
     return { success: true, connected: !!enabled, builtin: true };
   }
 
-  return { success: false, error: '该连通器需要授权，请先「去授权」或「断开连接」' };
+  return { success: false, error: '该连接器需要授权，请先「去授权」或「断开连接」' };
 }
 
 /**
@@ -298,7 +298,7 @@ function getClientId(id) {
 }
 function setClientId(id, value) {
   const def = getConnector(id);
-  if (!def) return { success: false, error: '未找到连通器: ' + id };
+  if (!def) return { success: false, error: '未找到连接器: ' + id };
   const v = String(value || '').trim();
   if (!v) return { success: false, error: 'App ID 不能为空' };
   const r = credentialStore.setSecret(clientIdKey(id), v);
@@ -309,7 +309,7 @@ function setClientId(id, value) {
 /** 存 App Secret（飞书等 code 换 token 用），加密落盘；保存前对平台校验一次。 */
 async function setAppSecret(id, value) {
   const def = getConnector(id);
-  if (!def) return { success: false, error: '未找到连通器: ' + id };
+  if (!def) return { success: false, error: '未找到连接器: ' + id };
   const v = String(value || '').trim();
   if (!v) return { success: false, error: 'App Secret 不能为空' };
 
@@ -327,7 +327,7 @@ async function setAppSecret(id, value) {
 }
 
 /**
- * 给渲染层的连通器清单。
+ * 给渲染层的连接器清单。
  * 只暴露「能安全展示的字段」：id / 名称 / 分类 / 授权方式 / 描述 / 品牌色 /
  * 授权页 URL / 文档 URL / scope / 授权状态。**不含任何凭证内容**。
  *
@@ -384,7 +384,7 @@ function safeDocsUrl(def) {
   } catch (e) { return ''; }
 }
 
-/** 该连通器用哪个回调端口（必须落在白名单内） */
+/** 该连接器用哪个回调端口（必须落在白名单内） */
 function callbackPortFor(def) {
   const list = (state.cfg.callbackPorts && state.cfg.callbackPorts.length)
     ? state.cfg.callbackPorts : ALLOWED_CALLBACK_PORTS;
@@ -434,7 +434,7 @@ function safeTokenUrl(def) {
  */
 async function beginOAuth(id, opts) {
   const def = getConnector(id);
-  if (!def) return { success: false, error: '未找到连通器: ' + id };
+  if (!def) return { success: false, error: '未找到连接器: ' + id };
   if (def.authMethod === 'none') {
     return { success: false, error: '「' + def.name + '」无需授权，可直接启用' };
   }
@@ -469,7 +469,7 @@ async function beginOAuth(id, opts) {
   }
   const port = callbackPortFor(def);
 
-  // state：随机值 + 绑定连通器 + 过期时间。回调时必须原样对上，否则拒绝
+  // state：随机值 + 绑定连接器 + 过期时间。回调时必须原样对上，否则拒绝
   const stateVal = crypto.randomBytes(16).toString('hex');
   const session = {
     connectorId: id,
@@ -695,7 +695,7 @@ function notifyRenderer(payload) {
  */
 async function saveCredential(id, token) {
   const def = getConnector(id);
-  if (!def) return { success: false, error: '未找到连通器: ' + id };
+  if (!def) return { success: false, error: '未找到连接器: ' + id };
   if (def.authMethod === 'none') return { success: false, error: '「' + def.name + '」无需授权' };
   if (!def.secretKey) return { success: false, error: '「' + def.name + '」未配置凭证存储键' };
 
@@ -731,7 +731,7 @@ async function saveCredential(id, token) {
 /** 断开连接 = 删凭证（不做软禁用，避免残留令牌仍可用） */
 function disconnect(id) {
   const def = getConnector(id);
-  if (!def) return { success: false, error: '未找到连通器: ' + id };
+  if (!def) return { success: false, error: '未找到连接器: ' + id };
   if (def.authMethod === 'none') return { success: false, error: '「' + def.name + '」无需授权，无法断开' };
   if (!def.secretKey) return { success: false, error: '「' + def.name + '」未配置凭证存储键' };
   const ok = credentialStore.deleteSecret(def.secretKey);
@@ -745,25 +745,25 @@ function healthCheck() {
   const problems = [];
   const warnings = [];
   if (state.error) warnings.push(state.error);
-  if (!yaml) problems.push('js-yaml 不可用，连通器目录无法加载');
+  if (!yaml) problems.push('js-yaml 不可用，连接器目录无法加载');
   const VALID_FLOWS = ['oauth', 'console', 'none'];
   for (const c of state.cfg.connectors) {
-    if (!c.name) problems.push('连通器「' + c.id + '」缺名称');
-    if (!c.officialName) problems.push('连通器「' + c.id + '」缺官方名称（用户要靠它认出来）');
+    if (!c.name) problems.push('连接器「' + c.id + '」缺名称');
+    if (!c.officialName) problems.push('连接器「' + c.id + '」缺官方名称（用户要靠它认出来）');
     const flow = c.authFlow || (c.authMethod === 'none' ? 'none' : 'oauth');
     if (!VALID_FLOWS.includes(flow)) {
-      problems.push('连通器「' + c.id + '」的 authFlow 非法: ' + flow);
+      problems.push('连接器「' + c.id + '」的 authFlow 非法: ' + flow);
     }
     // 需要授权的必须能跳浏览器 —— 用户要求「一律跳浏览器授权」
     if (flow !== 'none' && !safeAuthorizeUrl(c)) {
-      problems.push('连通器「' + c.id + '」的授权地址无效或非 https（必须能跳浏览器授权）');
+      problems.push('连接器「' + c.id + '」的授权地址无效或非 https（必须能跳浏览器授权）');
     }
     if (flow !== 'none' && !c.secretKey) {
-      problems.push('连通器「' + c.id + '」缺凭证存储键（secretKey）');
+      problems.push('连接器「' + c.id + '」缺凭证存储键（secretKey）');
     }
   }
   if (!credentialStore.encryptionAvailable()) {
-    warnings.push('系统加密（safeStorage）当前不可用，连通器凭证将无法保存 —— 这是刻意设计，避免明文落盘');
+    warnings.push('系统加密（safeStorage）当前不可用，连接器凭证将无法保存 —— 这是刻意设计，避免明文落盘');
   }
   return { ok: problems.length === 0, problems, warnings };
 }

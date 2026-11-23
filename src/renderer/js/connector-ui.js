@@ -1,12 +1,12 @@
 /**
- * 连通器管理前端模块
+ * 连接器管理前端模块
  * ============================================================
- * 入口：聊天页顶部工具栏的「连通器」按钮（与「安全中心」按钮并列）。
+ * 入口：聊天页顶部工具栏的「连接器」按钮（与「安全中心」按钮并列）。
  *
- * 页面结构（用户要求：连接页只展示所选连通器的详情，其他靠返回查看）：
+ * 页面结构（用户要求：连接页只展示所选连接器的详情，其他靠返回查看）：
  *   弹窗 = 标题栏（可返回）+ 内容区
- *   ·列表页：全部连通器（曲别针图标 + 名称），点任一 → 详情页
- *   · 详情页：**只显示这一个连通器**，顶部有返回按钮 → 回列表页
+ *   ·列表页：全部连接器（曲别针图标 + 名称），点任一 → 详情页
+ *   · 详情页：**只显示这一个连接器**，顶部有返回按钮 → 回列表页
  *
  * 授权方式（用户要求：一律跳浏览器，不在应用里粘密钥）：
  *   ·去授权 → 打开浏览器官方授权页
@@ -55,7 +55,7 @@
     return c.brandColor || 'var(--text-secondary, #999)';
   }
 
-  // 连通器品牌图标：优先用各家官方品牌字形（brand-icons.js），
+  // 连接器品牌图标：优先用各家官方品牌字形（brand-icons.js），
   // 没有官方字形的（builtin-web 等）回退到回形针占位。
   function iconFor(c) {
     if (window.BrandIcons) {
@@ -97,7 +97,7 @@
         console.error('[ConnectorUI] 加载失败:', e);
         this._loaded = true;
         this.list = [];
-        this.setBody('<div class="sec-conn-empty">连通器加载失败<br><span style="opacity:.7">' + this._esc(e.message || e) + '</span></div>');
+        this.setBody('<div class="sec-conn-empty">连接器加载失败<br><span style="opacity:.7">' + this._esc(e.message || e) + '</span></div>');
       }
       return this.list;
     },
@@ -144,10 +144,10 @@
     // ── 列表页 ────────────────────────────────────────────────────────────
     showList() {
       this.currentId = '';
-      this.setHeader('连通器', false);
+      this.setHeader('连接器', false);
 
       if (!this.list.length) {
-        this.setBody('<div class="sec-conn-empty">没有可用连通器<br><span style="opacity:.7">connectors.yaml 未加载或为空</span></div>');
+        this.setBody('<div class="sec-conn-empty">没有可用连接器<br><span style="opacity:.7">connectors.yaml 未加载或为空</span></div>');
         return;
       }
 
@@ -189,10 +189,10 @@
       };
     },
 
-    // ── 详情页：只展示这一个连通器 ────────────────────────────────────────
+    // ── 详情页：只展示这一个连接器 ────────────────────────────────────────
     openDetail(id) {
       const c = this.list.find(x => x.id === id);
-      if (!c) { this.toast('未找到该连通器', false); return; }
+      if (!c) { this.toast('未找到该连接器', false); return; }
       this.currentId = id;
       this.setHeader(c.name, true);           // ← 详情页才有返回按钮
 

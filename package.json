@@ -1,6 +1,6 @@
 {
   "name": "fuling-shijie",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "浮灵饰界 - 智能桌面宠物助手，支持Live2D模型、本地/云端AI模型、系统操作",
   "main": "src/main/main.js",
   "scripts": {
@@ -16,12 +16,15 @@
     "test:close-race": "node scripts/test-close-race.js 6",
     "test:pick-window": "node scripts/test-pick-main-window.js",
     "test:clone-follow": "node scripts/test-clone-follow.js",
-    "prebuild": "node scripts/copy-build-resources.js && node scripts/build-rdp-host.js",
+    "prebuild": "node scripts/sync-changelog.js && node scripts/copy-build-resources.js && node scripts/build-rdp-host.js",
     "build:win-dir": "npm run prebuild && electron-builder --win --x64 --dir",
-    "build:win": "npm run prebuild && electron-builder --win --x64 --publish=never",
+    "build:win": "node scripts/build-web-installer.js",
+    "build:win-nsis": "npm run prebuild && electron-builder --win --x64 --publish=never",
     "build:web-installer": "node scripts/build-web-installer.js",
-    "build:linux": "node scripts/copy-build-resources.js && electron-builder --linux --x64 --publish=never",
-    "build:mac": "node scripts/copy-build-resources.js && electron-builder --mac --x64 --arm64 --publish=never",
+    "export:release-notes": "node scripts/export-release-notes.js",
+    "build:linux": "node scripts/sync-changelog.js && node scripts/copy-build-resources.js && electron-builder --linux --x64 --publish=never",
+    "build:mac": "node scripts/sync-changelog.js && node scripts/copy-build-resources.js && electron-builder --mac --x64 --arm64 --publish=never",
+    "gen:mac-assets": "electron scripts/gen-mac-assets.js",
     "optimize:cursors": "electron scripts/optimize-cursor-assets.js",
     "test:cursor": "electron scripts/test-cursor-perf.js",
     "test:active-provider": "electron scripts/test-ai-active-provider.js"
@@ -39,6 +42,8 @@
     "files": [
       "src/**/*",
       "assets/**/*",
+      "!assets/dmg/**",
+      "!assets/entitlements.mac.plist",
       "package.json"
     ],
     "asarUnpack": [
@@ -75,8 +80,18 @@
     },
     "linux": {
       "target": [
-        { "target": "AppImage", "arch": ["x64"] },
-        { "target": "deb", "arch": ["x64"] }
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "icon": "assets/icons",
       "category": "Utility",
@@ -85,15 +100,59 @@
     },
     "mac": {
       "target": [
-        { "target": "dmg", "arch": ["x64", "arm64"] },
-        { "target": "zip", "arch": ["x64", "arm64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
       "icon": "assets/icons/icon.icns",
       "category": "public.app-category.utilities",
       "artifactName": "FulingShijie-v${version}-${arch}.${ext}",
-      "identity": null,
-      "hardenedRuntime": false
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "notarize": false,
+      "entitlements": "assets/entitlements.mac.plist",
+      "entitlementsInherit": "assets/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "浮灵饰界需要使用麦克风进行语音唤醒与语音对话。"
+      }
     },
+    "dmg": {
+      "title": "浮灵饰界 ${version}",
+      "background": "assets/dmg/background.png",
+      "icon": "assets/icons/icon.icns",
+      "iconSize": 96,
+      "iconTextSize": 13,
+      "sign": false,
+      "window": {
+        "width": 620,
+        "height": 400
+      },
+      "contents": [
+        {
+          "x": 160,
+          "y": 200,
+          "type": "file"
+        },
+        {
+          "x": 460,
+          "y": 200,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "afterSign": "scripts/notarize-mac.js",
     "publish": {
       "provider": "github",
       "owner": "yonggezx",

@@ -1,0 +1,359 @@
+{
+  "title": "浮灵饰界",
+  "subtitle": "智能桌面宠物助手 · 让 AI 陪伴你的每一天",
+  "sections": [
+    {
+      "heading": "关于 浮灵饰界",
+      "lines": [
+        {
+          "who": "程序名称",
+          "why": "浮灵饰界"
+        },
+        {
+          "who": "版本号",
+          "why": "v1.0.7"
+        },
+        {
+          "who": "构建编号",
+          "why": "Build 20261008"
+        },
+        {
+          "who": "运行平台",
+          "why": "Windows / macOS / Linux"
+        },
+        {
+          "who": "发布日期",
+          "why": "2026年10月8日"
+        }
+      ]
+    },
+    {
+      "heading": "主开发",
+      "lines": [
+        {
+          "who": "晴日月"
+        }
+      ]
+    },
+    {
+      "heading": "制作人",
+      "lines": [
+        {
+          "who": "张磊"
+        }
+      ]
+    },
+    {
+      "heading": "技术总监",
+      "lines": [
+        {
+          "who": "栾梦博"
+        }
+      ]
+    },
+    {
+      "heading": "主策划",
+      "lines": [
+        {
+          "who": "李俊瑶"
+        }
+      ]
+    },
+    {
+      "heading": "文案策划",
+      "lines": [
+        {
+          "who": "蒋茹一"
+        }
+      ]
+    },
+    {
+      "heading": "主程序",
+      "lines": [
+        {
+          "who": "晴日月"
+        }
+      ]
+    },
+    {
+      "heading": "客户端开发",
+      "lines": [
+        {
+          "who": "杜一帆"
+        }
+      ]
+    },
+    {
+      "heading": "服务端开发",
+      "lines": [
+        {
+          "who": "张怀哲"
+        }
+      ]
+    },
+    {
+      "heading": "工具开发",
+      "lines": [
+        {
+          "who": "赵子墨"
+        }
+      ]
+    },
+    {
+      "heading": "运维开发",
+      "lines": [
+        {
+          "who": "吴宇晨"
+        }
+      ]
+    },
+    {
+      "heading": "数据库开发",
+      "lines": [
+        {
+          "who": "周雅琪"
+        }
+      ]
+    },
+    {
+      "heading": "主美术",
+      "lines": [
+        {
+          "who": "苏婉清"
+        }
+      ]
+    },
+    {
+      "heading": "UI 美术",
+      "lines": [
+        {
+          "who": "沈亦然"
+        }
+      ]
+    },
+    {
+      "heading": "2D 美术",
+      "lines": [
+        {
+          "who": "顾清羽"
+        }
+      ]
+    },
+    {
+      "heading": "测试负责人",
+      "lines": [
+        {
+          "who": "韩明轩"
+        }
+      ]
+    },
+    {
+      "heading": "功能测试",
+      "lines": [
+        {
+          "who": "陈雨桐"
+        }
+      ]
+    },
+    {
+      "heading": "自动化测试",
+      "lines": [
+        {
+          "who": "郑晓阳"
+        }
+      ]
+    },
+    {
+      "heading": "性能测试",
+      "lines": [
+        {
+          "who": "方景行"
+        }
+      ]
+    },
+    {
+      "heading": "技术文档",
+      "lines": [
+        {
+          "who": "方静怡"
+        }
+      ]
+    },
+    {
+      "heading": "开源依赖",
+      "lines": [
+        {
+          "who": "Electron",
+          "why": "MIT License · 跨平台桌面框架 · https://www.electronjs.org"
+        },
+        {
+          "who": "pixi-live2d-display",
+          "why": "MIT License · Live2D 渲染引擎 · https://github.com/guansss/pixi-live2d-display"
+        },
+        {
+          "who": "js-yaml",
+          "why": "MIT License · 商城目录解析 · https://github.com/nodeca/js-yaml"
+        },
+        {
+          "who": "Node.js",
+          "why": "MIT License · 运行时与脚本 · https://nodejs.org"
+        },
+        {
+          "who": "相关许可证文件见项目根目录 LICENSE 及各开源组件仓库",
+          "why": ""
+        }
+      ]
+    },
+    {
+      "heading": "数据与资源说明",
+      "lines": [
+        {
+          "who": "部分图标、Live2D 模型、字体和示例数据来自公开资源，版权归原作者所有。",
+          "why": ""
+        },
+        {
+          "who": "魔搭社区（ModelScope）MCP / Skills / AgentHub 条目数据来自社区公开接口。",
+          "why": ""
+        },
+        {
+          "who": "如涉及版权问题，请联系应用内「设置」中的反馈渠道。",
+          "why": ""
+        }
+      ]
+    },
+    {
+      "heading": "隐私与数据说明",
+      "lines": [
+        {
+          "who": "本程序默认不会收集用户的个人隐私信息。",
+          "why": ""
+        },
+        {
+          "who": "本地优先：模型、商城目录与配置均保存在本机，密钥经系统加密凭证库存储。",
+          "why": ""
+        },
+        {
+          "who": "日志数据仅用于问题排查和性能优化，用户可在设置中关闭日志上报。",
+          "why": ""
+        }
+      ]
+    },
+    {
+      "heading": "联系我们",
+      "lines": [
+        {
+          "who": "官方网站",
+          "why": "https://yonggezx.github.io/fuling-shijie-website/"
+        },
+        {
+          "who": "反馈邮箱",
+          "why": "yonggezx@163.com"
+        },
+        {
+          "who": "官方公众号",
+          "why": "浮灵饰界（微信内搜索关注）"
+        },
+        {
+          "who": "问题提交",
+          "why": "https://github.com/yonggezx/fuling-shijie-update/issues"
+        }
+      ]
+    },
+    {
+      "heading": "鸣谢",
+      "lines": [
+        {
+          "who": "感谢所有参与测试、提出建议和分享反馈的用户。",
+          "why": ""
+        },
+        {
+          "who": "感谢开源社区提供的优秀工具和文档。",
+          "why": ""
+        },
+        {
+          "who": "感谢以下模型、平台与项目对本项目的支持：",
+          "why": ""
+        },
+        {
+          "who": "Live2D 官方网站",
+          "why": "https://www.live2d.com"
+        }
+      ]
+    },
+    {
+      "heading": "鸣谢名单",
+      "lines": [
+        {
+          "who": "Ollama 本地模型",
+          "why": "https://ollama.com"
+        },
+        {
+          "who": "通义千问 · 阿里云百炼",
+          "why": "https://tongyi.aliyun.com"
+        },
+        {
+          "who": "DeepSeek",
+          "why": "https://www.deepseek.com"
+        },
+        {
+          "who": "字节豆包",
+          "why": "https://www.doubao.com"
+        },
+        {
+          "who": "Qwen 系列 / Qwen-Image / FLUX 等",
+          "why": "https://modelscope.cn"
+        },
+        {
+          "who": "ModelScope 魔搭社区",
+          "why": "https://modelscope.cn"
+        },
+        {
+          "who": "Model Context Protocol 社区",
+          "why": "https://modelcontextprotocol.io"
+        },
+        {
+          "who": "Anthropic Agent Skills 规范",
+          "why": "https://www.anthropic.com"
+        },
+        {
+          "who": "Windows-MCP 生态",
+          "why": "https://github.com/CursorTouch/Windows-MCP"
+        },
+        {
+          "who": "Bongo Cat（键盘猫模式参考项目）",
+          "why": "https://github.com/vladelaina/BongoCat"
+        },
+        {
+          "who": "Electron / Node.js / js-yaml 等开源项目",
+          "why": "https://www.electronjs.org"
+        },
+        {
+          "who": "GitHub 开源社区",
+          "why": "https://github.com"
+        }
+      ]
+    },
+    {
+      "heading": "版权信息",
+      "lines": [
+        {
+          "who": "Copyright © 2026 浮灵饰界工作室",
+          "why": ""
+        },
+        {
+          "who": "保留所有权利。",
+          "why": ""
+        },
+        {
+          "who": "本程序及其文档受著作权法和国际条约保护。",
+          "why": ""
+        },
+        {
+          "who": "未经授权，不得复制、修改、反向工程或用于商业用途。",
+          "why": ""
+        }
+      ]
+    }
+  ],
+  "ending": "— The End —"
+}

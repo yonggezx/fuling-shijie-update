@@ -422,6 +422,8 @@ try { require('./ipc/crashGuard').installCrashGuard({ logsPath }); } catch (e) {
 ConfigManager.init(configPath);
 ModelManager.init(modelsPath);
 AIOps.init(ConfigManager.getConfig().ai || {});
+// 自定义智能体角色与商城下载共用同一个数据目录（否则商城装的智能体在底部角色选择里看不到）
+try { AIOps.setUserDataDir(userDataPath); } catch (e) { console.warn('[AgentRoles] 初始化数据目录失败:', e.message); }
 // 智能商城：本地（无服务器），技能/MCP/智能体下载、启用、导入。依赖 mcpManager 做 MCP 启停。
 try { MarketplaceManager.init({ userDataDir: userDataPath, factoryDir: path.join(__dirname, 'agent-config'), mcpManager: require('./mcp/mcpManager') }); } catch (e) { console.warn('[Marketplace] 初始化失败:', e.message); }
 // 长期记忆库：与 config.json 同目录，供 Agent 的 memory_* 工具与「AI 记忆」面板读写（Markdown）
@@ -1584,7 +1586,7 @@ ipcMain.handle('security:audit-add', (_e, category, action, details, risk) => Se
 ipcMain.handle('security:backup-create', () => SecurityCenter.createBackup());
 ipcMain.handle('security:backup-list', () => SecurityCenter.getBackups());
 
-// ===== 连通器（需要授权的外部服务）=====
+// ===== 连接器（需要授权的外部服务）=====
 ipcMain.handle('connector:list', () => Connectors.listConnectors());
 ipcMain.handle('connector:authorize', (_e, id, opts) => Connectors.beginOAuth(id, opts || {}));
 ipcMain.handle('connector:save-credential', (_e, id, token) => Connectors.saveCredential(id, token));

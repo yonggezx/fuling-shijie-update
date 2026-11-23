@@ -310,11 +310,11 @@ if (fs.existsSync(path.join(CONFIG_DIR, MCP_YAML))) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// [6] 连通器目录（connectors.yaml）
+// [6] 连接器目录（connectors.yaml）
 // ══════════════════════════════════════════════════════════════════════════
 const CONN_YAML = 'connectors.yaml';
 if (fs.existsSync(path.join(CONFIG_DIR, CONN_YAML))) {
-  console.log('\n[6] 连通器目录');
+  console.log('\n[6] 连接器目录');
   let connDoc = null;
   try {
     connDoc = loadYamlIn(CONN_YAML);
@@ -326,16 +326,16 @@ if (fs.existsSync(path.join(CONFIG_DIR, CONN_YAML))) {
   if (connDoc) {
     const conns = Array.isArray(connDoc.connectors) ? connDoc.connectors : [];
 
-    ok(conns.length > 0, `目录含 ${conns.length} 个连通器`);
+    ok(conns.length > 0, `目录含 ${conns.length} 个连接器`);
 
     // id 唯一
     const ids = conns.map(c => c && c.id);
     const dupId = ids.filter((v, i) => v && ids.indexOf(v) !== i);
-    ok(dupId.length === 0, dupId.length ? '连通器 id 重复: ' + [...new Set(dupId)].join(', ') : '连通器 id 无重复');
+    ok(dupId.length === 0, dupId.length ? '连接器 id 重复: ' + [...new Set(dupId)].join(', ') : '连接器 id 无重复');
 
     // 每个都要有官方名称 —— 用户得认得出这是哪个服务
     const noName = conns.filter(c => !c.officialName);
-    ok(noName.length === 0, noName.length ? '缺 officialName: ' + noName.map(c => c.id).join(', ') : '每个连通器都有官方名称');
+    ok(noName.length === 0, noName.length ? '缺 officialName: ' + noName.map(c => c.id).join(', ') : '每个连接器都有官方名称');
 
     // 图标：**统一曲别针线条**，配置里不该再有各家官方字形。
     // 各家官方 path 实测大小不一、部分渲染成色块，观感差 —— 所以不再下发 icon。
@@ -388,7 +388,7 @@ if (fs.existsSync(path.join(CONFIG_DIR, CONN_YAML))) {
     });
     ok(badResolvedPort.length === 0, badResolvedPort.length
       ? '回调端口不在白名单: ' + badResolvedPort.map(c => c.id + '→' + (c.callbackPort || ports[0])).join(', ')
-      : '所有需授权的连通器回调端口都在白名单内（默认 ' + (ports[0] || '?') + '）');
+      : '所有需授权的连接器回调端口都在白名单内（默认 ' + (ports[0] || '?') + '）');
 
     // 需授权的必须有凭证存储键
     const noKey = needAuth.filter(c => !c.secretKey);
@@ -396,12 +396,12 @@ if (fs.existsSync(path.join(CONFIG_DIR, CONN_YAML))) {
 
     // 每个都要有说明
     const noDesc = conns.filter(c => !c.description);
-    ok(noDesc.length === 0, noDesc.length ? '缺 description: ' + noDesc.map(c => c.id).join(', ') : '每个连通器都有用途说明');
+    ok(noDesc.length === 0, noDesc.length ? '缺 description: ' + noDesc.map(c => c.id).join(', ') : '每个连接器都有用途说明');
 
     // 密钥红线
     const connText = readRaw(CONN_YAML);
     const connSecret = connText.match(SECRET_RE);
-    ok(!connSecret, connSecret ? '连通器配置出现疑似密钥: ' + connSecret[0].slice(0, 30) : '连通器配置无密钥明文（只留 secretKey 占位）');
+    ok(!connSecret, connSecret ? '连接器配置出现疑似密钥: ' + connSecret[0].slice(0, 30) : '连接器配置无密钥明文（只留 secretKey 占位）');
 
     // 主进程实现要在
     const impl = path.join(ROOT, 'src', 'main', 'ipc', 'connectors.js');
@@ -409,11 +409,11 @@ if (fs.existsSync(path.join(CONFIG_DIR, CONN_YAML))) {
     const ui = path.join(ROOT, 'src', 'renderer', 'js', 'connector-ui.js');
     info(fs.existsSync(ui), '渲染层实现 src/renderer/js/connector-ui.js' + (fs.existsSync(ui) ? '' : '（缺失！）'));
     const htmlHasBtn = fs.readFileSync(path.join(ROOT, 'src', 'renderer', 'index.html'), 'utf8').includes('btn-open-connectors');
-    ok(htmlHasBtn, '聊天页顶部有连通器按钮（与安全中心并列）');
+    ok(htmlHasBtn, '聊天页顶部有连接器按钮（与安全中心并列）');
   }
 } else {
-  console.log('\n[6] 连通器目录');
-  info(false, 'connectors.yaml 不存在（连通器入口将显示为空，不影响其他功能）');
+  console.log('\n[6] 连接器目录');
+  info(false, 'connectors.yaml 不存在（连接器入口将显示为空，不影响其他功能）');
 }
 
 console.log('\n' + (bad === 0

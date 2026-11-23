@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>浮灵饰界 安装向导</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- 背景动效 -->
+  <div class="bg-effects">
+    <div class="bg-gradient"></div>
+    <div class="circuit-pattern"></div>
+    <div class="bubble"></div>
+    <div class="bubble"></div>
+    <div class="bubble"></div>
+    <div class="bubble"></div>
+    <div class="bubble"></div>
+  </div>
+
+  <!-- 安装器窗口（毛玻璃） -->
+  <div class="installer-window">
+
+    <!-- 标题栏：只有右上角窗口控件 -->
+    <div class="titlebar">
+      <div class="window-controls">
+        <button class="win-btn minimize" id="btnMinimize" title="最小化">
+          <svg width="11" height="11" viewBox="0 0 12 12"><rect y="5" width="12" height="2" fill="currentColor"/></svg>
+        </button>
+        <button class="win-btn close" id="btnClose" title="关闭">
+          <svg width="11" height="11" viewBox="0 0 12 12"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="main-content">
+
+      <!-- ==================== 页面1：欢迎安装 ==================== -->
+      <div class="page active" id="install-config">
+
+        <div class="hero">
+          <div class="welcome-logo">
+            <img src="icon.png" alt="浮灵饰界">
+          </div>
+          <div class="app-name">浮灵饰界</div>
+          <div class="app-sub" id="subtitle">智能桌面宠物助手 · Live2D 虚拟形象 · 本地 AI 推理</div>
+
+          <button class="btn-install-main" id="btnStartInstall">立即安装</button>
+        </div>
+
+        <!-- 自定义安装展开区 -->
+        <div class="custom-panel" id="customPanel">
+          <label class="panel-label">安装位置</label>
+          <div class="path-input-row">
+            <input type="text" class="text-input" id="installPath" value="" readonly>
+            <button class="icon-btn" id="btnBrowse" title="浏览">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            </button>
+          </div>
+          <div class="panel-hint" id="diskHint">建议磁盘剩余空间 ≥ 2GB</div>
+
+          <div class="panel-options">
+            <label class="checkbox-item">
+              <input type="checkbox" id="chkDesktop" checked>
+              <span>创建桌面快捷方式</span>
+            </label>
+            <label class="checkbox-item">
+              <input type="checkbox" id="chkStartMenu" checked>
+              <span>创建开始菜单快捷方式</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- 底部行：左协议 / 右自定义安装 -->
+        <div class="install-footer-row">
+          <label class="checkbox-item">
+            <input type="checkbox" id="agreeLicense">
+            <span>我已阅读并同意</span>
+            <a class="license-link" id="licenseLink">《用户许可协议》</a>
+          </label>
+
+          <div class="toggle-custom-text" id="toggleCustom">
+            <span>自定义安装</span>
+            <span class="arrow">&#9662;</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== 页面2：安装进度（上方：程序图标 + 功能介绍轮播，下方进度条） ==================== -->
+      <div class="page" id="install-progress">
+        <div class="progress-stage">
+          <div class="progress-hero">
+            <div class="progress-logo">
+              <img src="icon.png" alt="浮灵饰界">
+            </div>
+            <div class="feature-slide" id="featureSlide">
+              <div class="feature-title" id="featureTitle"></div>
+              <div class="feature-desc" id="featureDesc"></div>
+            </div>
+            <div class="feature-dots" id="featureDots"></div>
+          </div>
+          <div class="progress-area">
+            <div class="progress-header">
+              <span class="pct" id="installPct">0%</span>
+            </div>
+            <div class="progress-track">
+              <div class="progress-fill" id="installBar"></div>
+            </div>
+          </div>
+        </div>
+        <div class="progress-tip" id="installTip" style="display:none;"></div>
+      </div>
+
+      <!-- ==================== 页面3：安装完成 ==================== -->
+      <div class="page" id="install-finish">
+        <div class="finish-center">
+          <div class="success-icon">
+            <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+          </div>
+          <h2 class="finish-title">安装完成！</h2>
+          <p class="finish-desc">浮灵饰界 已成功安装到您的计算机，现在就可以启动你的桌面宠物助手了。</p>
+          <span class="finish-path" id="installPathDisplay"></span>
+
+          <div class="finish-actions">
+            <button class="btn-custom" id="btnLaunch">立即启动</button>
+            <button class="btn-ghost" id="btnFinishClose">关闭</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ==================== 卸载确认 ==================== -->
+      <div class="page" id="uninstall-config">
+        <div class="hero">
+          <div class="welcome-logo">
+            <img src="icon.png" alt="浮灵饰界">
+          </div>
+          <div class="app-name">卸载 浮灵饰界</div>
+          <div class="app-sub">即将从计算机中移除，请确认下方选项</div>
+        </div>
+
+        <div class="custom-panel open" id="uninstallPanel" style="max-height:none;opacity:1;margin-top:12px;padding:14px 16px;border-color:var(--glass-border);">
+          <div class="panel-options" style="margin-top:0;padding-top:0;border-top:none;">
+            <label class="checkbox-item">
+              <input type="checkbox" id="chkKeepUserData" checked>
+              <span>保留用户数据和模型</span>
+            </label>
+            <label class="checkbox-item">
+              <input type="checkbox" id="chkKeepConfig" checked>
+              <span>保留配置文件</span>
+            </label>
+          </div>
+          <div class="panel-hint">卸载目录 <span id="uninstallPath" style="user-select:text;"></span></div>
+        </div>
+
+        <div class="install-footer-row">
+          <span class="panel-hint" style="margin:0;">取消勾选可彻底清除对应数据</span>
+          <button class="btn-custom" id="btnUninstall" style="height:32px;padding:0 18px;font-size:13px;">确认卸载</button>
+        </div>
+      </div>
+
+      <!-- ==================== 卸载进度 ==================== -->
+      <div class="page" id="uninstall-progress">
+        <div class="progress-page-head">
+          <div class="progress-title">正在卸载 浮灵饰界</div>
+          <p class="progress-desc">正在移除程序文件并清理注册表信息，请稍候。</p>
+        </div>
+
+        <div class="progress-area">
+          <div class="progress-header">
+            <span class="status" id="uninstallStatus">正在准备卸载...</span>
+            <span class="pct" id="uninstallPct">0%</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill danger" id="uninstallBar"></div>
+          </div>
+        </div>
+
+        <div class="progress-tip" id="uninstallTip"></div>
+      </div>
+
+      <!-- ==================== 卸载完成 ==================== -->
+      <div class="page" id="uninstall-finish">
+        <div class="finish-center">
+          <div class="success-icon warn">
+            <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+          </div>
+          <h2 class="finish-title">卸载完成</h2>
+          <p class="finish-desc">浮灵饰界 已从您的计算机中移除，感谢您的使用，期待再次相见！</p>
+
+          <div class="finish-actions">
+            <button class="btn-ghost" id="btnUninstallClose">关闭</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ==================== 用户许可协议弹层 ==================== -->
+    <div class="license-overlay" id="licenseOverlay">
+      <div class="license-dialog">
+        <h3>浮灵饰界 用户许可协议与隐私声明</h3>
+        <div class="license-body">
+          请在安装和使用「浮灵饰界」（以下简称"本软件"）之前，仔细阅读并同意以下用户许可协议与隐私声明。安装、复制或以其他方式使用本软件，即表示您已阅读并接受本协议的全部条款。如果您不同意任何条款，请勿安装或使用本软件。<br><br>
+          <strong>第一条 软件概述</strong><br>
+          1.1 本软件是一款智能桌面宠物助手应用，主要功能包括：<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;（1）Live2D 虚拟角色展示与互动；<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;（2）本地 AI 模型与云端 AI 模型的对话交互；<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;（3）通过自然语言指令执行系统操作（如打开程序、输入文本、执行命令等）；<br>
+          &nbsp;&nbsp;&nbsp;&nbsp;（4）文件管理、模型管理与系统设置。<br>
+          1.2 本软件基于 Electron 框架开发，在用户本地计算机上运行。<br><br>
+          <strong>第二条 AI 功能使用注意事项</strong><br>
+          2.1 AI 生成内容免责声明：本软件的 AI 对话功能由第三方 AI 模型提供支持。AI 生成的内容可能存在不准确、不完整或误导性的信息。用户应对 AI 生成的内容进行独立判断和验证。<br>
+          2.2 系统操作风险提示：本软件支持通过 AI 解析自然语言指令来执行系统操作，包括但不限于打开应用程序、输入文本、发送键盘组合键、执行系统命令行指令。上述操作可能影响系统状态或用户数据，用户应在充分了解操作内容后谨慎使用。因 AI 执行操作导致的任何数据丢失、系统损坏或其他损失，由用户自行承担风险。<br>
+          2.3 模型选择与配置：用户可自行选择本地或云端 AI 模型。使用云端模型时，用户输入的内容将通过网络传输至对应的 AI 服务提供商。<br><br>
+          <strong>第三条 隐私政策与数据保护</strong><br>
+          3.1 本地数据存储：本软件的用户配置、对话历史、模型文件等数据均存储在用户本地计算机的指定目录中。本软件不会在未经用户明确同意的情况下，将用户数据上传至任何服务器。<br>
+          3.2 数据收集说明：本软件本身不主动收集用户的个人身份信息。使用云端 AI 模型时，用户输入的对话内容将发送至对应的 AI 服务提供商。运行过程中可能生成匿名的使用日志和错误日志，不包含个人身份信息。<br>
+          3.3 系统权限说明：本软件运行时需要文件系统访问、键盘输入、进程启动、网络访问等权限，仅在本软件运行期间按需使用。<br>
+          3.4 用户数据控制：用户有权随时查看、修改或删除本软件存储在本地计算机上的所有数据。<br><br>
+          <strong>第四条 使用许可与限制</strong><br>
+          4.1 授权范围：本软件基于 MIT 开源许可证发布。用户可以自由使用、复制、修改、合并、发布、分发、再授权和/或销售本软件的副本。<br>
+          4.2 使用限制：用户不得利用本软件从事违反法律法规的活动、恶意破坏计算机系统或他人数据、未经授权的入侵攻击或数据窃取行为。<br><br>
+          <strong>第五条 知识产权</strong><br>
+          5.1 本软件的著作权归 浮灵饰界 项目所有，依据 MIT 许可证向用户授予使用权。<br>
+          5.2 用户导入的 Live2D 模型、AI 模型等第三方资源的知识产权归其原作者所有。<br>
+          5.3 本软件使用的开源组件和第三方库遵循相应的开源许可证。<br><br>
+          <strong>第六条 免责声明</strong><br>
+          6.1 本软件按"现状"提供，不提供任何明示或暗示的担保。<br>
+          6.2 在任何情况下，本软件的作者或版权持有人均不对因使用本软件而产生的任何直接、间接、附带、特殊或后果性损害承担责任。<br>
+          6.3 用户使用本软件的 AI 系统操作功能执行的所有操作，由用户自行承担全部责任。<br><br>
+          <strong>第七条 协议变更</strong><br>
+          7.1 本协议可能不时更新，更新后将在本软件的分发渠道公布。<br>
+          7.2 用户继续使用本软件即视为接受更新后的协议。<br><br>
+          <strong>第八条 联系方式</strong><br>
+          项目主页：https://github.com/yonggezx/fuling-shijie-update<br><br>
+          Copyright (C) 2026 浮灵饰界. All rights reserved.<br>本软件基于 MIT 许可证发布，以上协议在 MIT 许可证基础上补充了 AI 产品相关的使用注意事项和隐私声明。
+        </div>
+        <button class="btn-custom" id="licenseClose">我已阅读</button>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

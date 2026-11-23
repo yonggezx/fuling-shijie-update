@@ -1,8 +1,8 @@
-// 连通器 UI 探针：验证「聊天页顶部按钮 → 弹窗 → 列表页 → 详情页 → 返回」的渲染与布局
+// 连接器 UI 探针：验证「聊天页顶部按钮 → 弹窗 → 列表页 → 详情页 → 返回」的渲染与布局
 // 用法: env -u ELECTRON_RUN_AS_NODE electron scripts/probe-connector-ui.js --no-sandbox --disable-gpu
 //
 // 为什么用程序化断言而不是看截图：本模型读不了图片，
-// 而「有没有溢出 / 图标是不是曲线 / 详情页有没有混入别的连通器」用 getBoundingClientRect 验更可靠。
+// 而「有没有溢出 / 图标是不是曲线 / 详情页有没有混入别的连接器」用 getBoundingClientRect 验更可靠。
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -57,7 +57,7 @@ const HELPERS = `
 const PROBE_TOP = `(function () {
   ${HELPERS}
   var btn = document.getElementById('btn-open-connectors');
-  ok('顶部有连通器按钮', !!btn);
+  ok('顶部有连接器按钮', !!btn);
   if (btn) {
     var r = btn.getBoundingClientRect();
     ok('按钮可见', r.width > 0 && r.height > 0, Math.round(r.width) + '×' + Math.round(r.height));
@@ -88,7 +88,7 @@ var icon = btn.querySelector('.el-icon');
     ok('路径含圆弧（回形针钩）', /a\\s*[-\\d.]/i.test(d), (d.match(/a[-\\d.]+/i) || [''])[0]);
     ok('路径总长度合理（不是退化的一条线）', d.length > 60, d.length + ' 字符');
   }
-  ok('按钮标题正确', (btn.getAttribute('title') || '').indexOf('连通器') >= 0, btn.getAttribute('title'));
+  ok('按钮标题正确', (btn.getAttribute('title') || '').indexOf('连接器') >= 0, btn.getAttribute('title'));
   }
   var secBtn = document.getElementById('btn-open-security-center');
   if (btn && secBtn) {
@@ -123,7 +123,7 @@ const PROBE_LIST = `(function () {
 
   var body = document.getElementById('conn-modal-body');
   var rows = body ? body.querySelectorAll('.conn-pick-row') : [];
-  ok('列表渲染出全部连通器', rows.length === 17, rows.length + ' 行');
+  ok('列表渲染出全部连接器', rows.length === 17, rows.length + ' 行');
   var cats = body ? body.querySelectorAll('.conn-picker-cat') : [];
   ok('按分类分组', cats.length >= 5, cats.length + ' 组');
 
@@ -175,13 +175,13 @@ const PROBE_DETAIL = `(function () {
   ok('详情页渲染成功', !!auth);
   if (!auth) return R;
 
-  // ── 核心要求：详情页只展示所选的那一个，不能混入其他连通器 ──
+  // ── 核心要求：详情页只展示所选的那一个，不能混入其他连接器 ──
   var text = auth.textContent || '';
   var allRows = window.ConnectorUI ? window.ConnectorUI.list : [];
   var leaked = allRows.filter(function (c) {
     return c.id !== window.ConnectorUI.currentId && text.indexOf(c.name) >= 0;
   });
-  ok('详情页不含其他连通器', leaked.length === 0,
+  ok('详情页不含其他连接器', leaked.length === 0,
     leaked.length ? '混入了: ' + leaked.map(c => c.name).join(', ') : '仅当前一个');
   ok('详情页内没有列表行', auth.querySelectorAll('.conn-pick-row').length === 0);
   ok('详情页内没有分类标题', auth.querySelectorAll('.conn-picker-cat').length === 0);
@@ -191,10 +191,10 @@ const PROBE_DETAIL = `(function () {
   ok('详情页显示返回按钮', back && back.style.display !== 'none', back ? back.style.display : 'missing');
   ok('返回按钮有文字', back && /返回/.test(back.textContent || ''), back ? (back.textContent || '').trim() : '');
 
-  // 标题变成连通器名
+  // 标题变成连接器名
   var title = (document.getElementById('conn-modal-title') || {}).textContent || '';
   var cur = window.ConnectorUI ? (window.ConnectorUI.list.find(c => c.id === window.ConnectorUI.currentId) || {}) : {};
-  ok('标题显示当前连通器名', title.trim() === (cur.name || '').trim(), title.trim() + ' / 期望 ' + (cur.name || ''));
+  ok('标题显示当前连接器名', title.trim() === (cur.name || '').trim(), title.trim() + ' / 期望 ' + (cur.name || ''));
 
   // 曲别针（大号）
   var clip = auth.querySelector('.conn-auth-clip svg');
@@ -241,7 +241,7 @@ const PROBE_BACK = `(function () {
   var backNow = document.getElementById('conn-back-btn');
   ok('返回后隐藏返回按钮', backNow && backNow.style.display === 'none', backNow ? backNow.style.display : '');
   var title = (document.getElementById('conn-modal-title') || {}).textContent || '';
-  ok('返回后标题回到「连通器」', title.trim() === '连通器', title.trim());
+  ok('返回后标题回到「连接器」', title.trim() === '连接器', title.trim());
   ok('返回后 currentId 清空', !window.ConnectorUI.currentId, String(window.ConnectorUI.currentId));
   return R;
 })()`;

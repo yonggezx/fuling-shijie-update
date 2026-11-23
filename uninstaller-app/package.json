@@ -1,0 +1,8 @@
+{
+  "name": "fuling-shijie-uninstaller",
+  "description": "浮灵饰界 卸载向导",
+  "main": "main.js",
+  "author": "浮灵饰界",
+  "license": "MIT",
+  "version": "1.0.12"
+}

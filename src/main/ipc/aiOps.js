@@ -1700,8 +1700,27 @@ function extractNextStepNotice(reasoning, toolNames) {
 const PRESET_AGENT_ROLES = _agentCfg.presetRoles || [];
 
 // 自定义角色存储路径
+// ⚠ 必须与 MarketplaceManager 使用同一个用户数据目录（main.js 统一为 app.getPath('userData')，
+//   便携版落在安装目录 data/）。历史上这里写死 process.cwd()/data，而商城下载智能体写的是
+//   userData/agent_roles.json —— 两个文件对不上，导致「商城下载的智能体在底部角色选择里看不到」。
+let _userDataDir = null;
+
+function setUserDataDir(dir) {
+  if (!dir) return;
+  _userDataDir = dir;
+  // 旧版本可能把角色存在 process.cwd()/data 下，迁移到统一目录，避免用户自定义角色丢失
+  try {
+    const legacy = path.join(process.cwd(), 'data', 'agent_roles.json');
+    const target = path.join(dir, 'agent_roles.json');
+    if (fs.existsSync(legacy) && !fs.existsSync(target)) {
+      fs.copyFileSync(legacy, target);
+      console.log('[AgentRoles] 已迁移自定义角色: ' + legacy + ' → ' + target);
+    }
+  } catch (e) { /* 迁移失败不阻断启动 */ }
+}
+
 function getCustomRolesPath() {
-  const dataDir = path.join(process.cwd(), 'data');
+  const dataDir = _userDataDir || path.join(process.cwd(), 'data');
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
   return path.join(dataDir, 'agent_roles.json');
 }
@@ -3769,7 +3788,7 @@ async function agentChat({ messages, providerId, temperature, maxTokens, thinkMo
   const safeToolNames = ALL_TOOL_NAMES.filter(n => !RISKY_TOOLS.has(n) && !mcpToolNames.includes(n));
   // 有风险工具 = 用户显式启用的 ∩ 角色允许的
   const enabledRiskyTools = requestedTools.filter(n => RISKY_TOOLS.has(n) && roleTools.includes(n));
-  // MCP 工具 = mcpManager 已启用的全部工具（用户在连通器/MCP 商城里手动启停，
+  // MCP 工具 = mcpManager 已启用的全部工具（用户在连接器/MCP 商城里手动启停，
   // 不受角色 tools 列表限制——角色里列不全 mcp_xxx 这种动态名字）
   const enabledMcpTools = mcpToolNames.slice();
   // 最终启用的工具 = 无风险工具（角色允许的）+ 用户显式启用的有风险工具 + 已启用的 MCP 工具
@@ -5315,7 +5334,7 @@ module.exports = {
   chat, streamChat, agentChat, cancelChat, cancelAgentChat,
   resolveToolConfirm,
   resolveUserGuidance,
-  getAgentRoles, saveAgentRole, deleteAgentRole,
+  getAgentRoles, saveAgentRole, deleteAgentRole, setUserDataDir,
   releaseGPUMemory,
   // 长期记忆（供渲染层的「AI 记忆」面板读写）
   // opts.workdir 用来切作用域：设置页要看「当前项目」的记忆时传 workdir，不传=全局

@@ -2702,12 +2702,13 @@
     let bongoHandTap = 0; // 左手敲击键盘强度 0~1（兼容旧逻辑）
     let bongoLeftHandTap = 0; // 左手敲击强度 0~1
     let bongoRightHandTap = 0; // 右手敲击强度 0~1
-    // ★ 左手/右手按键状态跟踪：释放后保持300ms再缩回
+    // ★ 左手/右手按键状态跟踪：释放后立即缩回
     let bongoLeftKeyDownCount = 0; // 当前按下的左手按键数量
     let bongoRightKeyDownCount = 0; // 当前按下的右手按键数量
     let bongoLeftLastUpTime = 0; // 最后一次左手按键释放时间（ms）
     let bongoRightLastUpTime = 0; // 最后一次右手按键释放时间（ms）
-    const BONGO_HAND_HOLD_MS = 500; // 按键释放后手保持按下的时间（ms），让手势清晰可见（原300太快看不到）
+    const BONGO_HAND_HOLD_MS = 0; // 按键释放后手保持按下的时间（ms）：设为0 = 立即放回桌面
+    // 历史：500（打字结束手迟迟不放下）→150（较快放回）→0（完全立刻放回，用户选定）。
     // ★ 输入状态缓存（参考 vladelaina/BongoCat 的"边缘事件→状态→帧节拍应用"设计）：
     // 所有键盘事件只更新这里的状态；手部参数与按键图由渲染帧统一计算/切换，
     // 避免高频打字时逐事件切图造成的闪烁、乱缩与全屏大图反复解码。

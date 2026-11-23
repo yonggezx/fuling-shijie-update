@@ -275,6 +275,12 @@ function ensureFreshWinUnpacked() {
 
   // 在指定目录上跑一次构建，返回是否成功
   function runDirBuild(targetDir, prefix) {
+    // 先把 changelog.json 同步成 window.CHANGELOG（关于页公告优先读它，否则会停在旧版本）
+    const clR = spawnSync('node', [path.join(root, 'scripts', 'sync-changelog.js')], {
+      cwd: root, stdio: 'inherit', env,
+    });
+    if (clR.status !== 0) { err('changelog 同步失败'); return false; }
+
     const prebuildR = spawnSync('node', [path.join(root, 'scripts', 'copy-build-resources.js')], {
       cwd: root, stdio: 'inherit', env,
     });

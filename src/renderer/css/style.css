@@ -19,7 +19,7 @@
   --warning: #ff9800;
   --danger: #f44336;
   --danger-glow: rgba(244, 67, 54, 0.3);
-  /* 弹窗统一规范（参考连通器/安全中心：面板/文字全部变量驱动，随主题切换）：
+  /* 弹窗统一规范（参考连接器/安全中心：面板/文字全部变量驱动，随主题切换）：
      玻璃系弹窗（工具确认/角色编辑/开发人员/智能商城）共用一组玻璃变量 */
   --glass-overlay-bg: rgba(8, 10, 16, .55);
   --glass-overlay-blur: 14px;
@@ -90,7 +90,7 @@ html[data-theme="light"] {
   --primary-hover: #ff1744;
   --primary-glow: rgba(255, 82, 82, 0.3);
   /* 浅色主题：玻璃弹窗（工具确认/角色编辑/开发人员/智能商城）同一组变量自动切换。
-     浅色同样保持毛玻璃质感：半透明白蓝玻璃渐变 + 模糊 + 高光描边（参考连通器页面），
+     浅色同样保持毛玻璃质感：半透明白蓝玻璃渐变 + 模糊 + 高光描边（参考连接器页面），
      但透明度足够高，保证文字清晰可读、不会"透明到看不见"。
      遮罩（周围变暗）与深色主题一致，统一为黑色半透明——不随主题变色。 */
   --glass-overlay-bg: rgba(8, 10, 16, .55);
@@ -418,7 +418,7 @@ body.titlebar-dragging .titlebar {
   fill: currentColor;
 }
 
-/* 线稿型图标（连通器曲别针等）在 .el-icon 里会被上面的 `fill: currentColor` 填实成黑疙瘩 ——
+/* 线稿型图标（连接器曲别针等）在 .el-icon 里会被上面的 `fill: currentColor` 填实成黑疙瘩 ——
    CSS 规则优先级高于 SVG 的 fill="none" 呈现属性。SVG 里已带 style="fill:none" 兜住，
    这里再加一道class 级的，双保险且不影响其他实心图标（它们不带 .line-icon）。 */
 .el-icon svg.line-icon,
@@ -2617,7 +2617,7 @@ html[data-accent] .theme-selector .theme-btn.active {
   color: var(--text-muted);
 }
 
-/* 通用磨砂（毛玻璃）弹窗：遮罩模糊 + 玻璃面板，变量驱动随深浅主题（参考连通器） */
+/* 通用磨砂（毛玻璃）弹窗：遮罩模糊 + 玻璃面板，变量驱动随深浅主题（参考连接器） */
 .glass-overlay {
   background: var(--glass-overlay-bg);
   backdrop-filter: blur(var(--glass-overlay-blur)) saturate(130%);
@@ -2669,7 +2669,7 @@ html[data-accent] .theme-selector .theme-btn.active {
 }
 
 /* 开发人员弹窗（项目标准弹窗：标题栏 + 关闭按钮；字幕区自由滚动、播完即停、可手动上下滑动）
-   面板/遮罩/文字全部引用玻璃变量组，随深浅主题自动切换（参考连通器） */
+   面板/遮罩/文字全部引用玻璃变量组，随深浅主题自动切换（参考连接器） */
 .dev-overlay {
   position: fixed;
   inset: 0;
@@ -7859,9 +7859,9 @@ select:focus {
   background: var(--text-secondary, #999);
 }
 
-/* ===== 连通器：曲别针列表 + 详情页 =====
-   连通器管理是**独立弹窗**，由聊天页顶部工具栏的「连通器」按钮打开（与安全中心并列）。
-   层级：列表页（全部连通器）→ 详情页（只显示所选的那一个，标题栏有返回按钮）。
+/* ===== 连接器：曲别针列表 + 详情页 =====
+   连接器管理是**独立弹窗**，由聊天页顶部工具栏的「连接器」按钮打开（与安全中心并列）。
+   层级：列表页（全部连接器）→ 详情页（只显示所选的那一个，标题栏有返回按钮）。
 
    图标：**统一曲别针线条**，不填色、无背景。
    各家官方字形实测大小不一、部分渲染成色块，观感很差；统一线条后
@@ -7909,7 +7909,7 @@ select:focus {
 .conn-modal-title {
   font-size: 15px;
   font-weight: 500;
-  /* 标题可能很长（详情页显示连通器名），限宽省略而不是把返回按钮挤走 */
+  /* 标题可能很长（详情页显示连接器名），限宽省略而不是把返回按钮挤走 */
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -8187,7 +8187,7 @@ select:focus {
   margin: 0 !important;
   padding: 0 !important;
 }
-/* 工具栏里的**线稿**图标（连通器曲别针）：显式给描边色 + 略放大。
+/* 工具栏里的**线稿**图标（连接器曲别针）：显式给描边色 + 略放大。
    1) currentColor 在这里解析成 .el-icon 继承来的低对比文字色，17px 下几乎看不清；
       线稿没有填充兜底，描边太淡就等于没画。
    2) 17px 塞两个回形针偏挤（实测 path 总长仅 27px），放大到 19px 并把线宽压到 1.5，

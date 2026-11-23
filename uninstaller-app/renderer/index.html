@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>浮灵饰界 卸载向导</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- 背景动效 -->
+  <div class="bg-effects">
+    <div class="bg-gradient"></div>
+    <div class="circuit-pattern"></div>
+    <div class="bubble"></div>
+    <div class="bubble"></div>
+    <div class="bubble"></div>
+    <div class="bubble"></div>
+    <div class="bubble"></div>
+  </div>
+
+  <!-- 卸载器窗口（毛玻璃） -->
+  <div class="installer-window">
+
+    <!-- 标题栏：只有右上角窗口控件 -->
+    <div class="titlebar">
+      <div class="window-controls">
+        <button class="win-btn minimize" id="btnMinimize" title="最小化">
+          <svg width="11" height="11" viewBox="0 0 12 12"><rect y="5" width="12" height="2" fill="currentColor"/></svg>
+        </button>
+        <button class="win-btn close" id="btnClose" title="关闭">
+          <svg width="11" height="11" viewBox="0 0 12 12"><path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="main-content">
+
+      <!-- ==================== 页面1：卸载确认 ==================== -->
+      <div class="page active" id="uninstall-config">
+        <div class="hero">
+          <div class="welcome-logo">
+            <img src="icon.png" alt="浮灵饰界">
+          </div>
+          <div class="app-name">卸载 浮灵饰界</div>
+          <div class="app-sub">即将从计算机中移除，请确认下方选项</div>
+        </div>
+
+        <div class="custom-panel" id="keepOptions" style="max-height:none;opacity:1;margin-top:12px;padding:14px 16px;border-color:var(--glass-border);">
+          <div class="panel-options" style="margin-top:0;padding-top:0;border-top:none;">
+            <label class="checkbox-item">
+              <input type="checkbox" id="chkKeepUserData" checked>
+              <span>保留用户数据和模型</span>
+            </label>
+            <label class="checkbox-item">
+              <input type="checkbox" id="chkKeepConfig" checked>
+              <span>保留配置文件</span>
+            </label>
+          </div>
+          <div class="panel-hint">卸载目录 <span id="uninstallPath" style="user-select:text;"></span></div>
+        </div>
+
+        <div class="install-footer-row">
+          <span class="panel-hint" style="margin:0;">取消勾选可彻底清除对应数据</span>
+          <button class="btn-custom" id="btnUninstall" style="height:32px;padding:0 18px;font-size:13px;">确认卸载</button>
+        </div>
+      </div>
+
+      <!-- ==================== 页面2：卸载进度 ==================== -->
+      <div class="page" id="uninstall-progress">
+        <div class="progress-page-head">
+          <div class="progress-title">正在卸载 浮灵饰界</div>
+          <p class="progress-desc">正在移除程序文件并清理注册表信息，请稍候。</p>
+        </div>
+
+        <div class="progress-area">
+          <div class="progress-header">
+            <span class="status" id="uninstallStatus">正在准备卸载...</span>
+            <span class="pct" id="uninstallPct">0%</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill danger" id="uninstallBar"></div>
+          </div>
+        </div>
+
+        <div class="progress-tip" id="uninstallTip"></div>
+      </div>
+
+      <!-- ==================== 页面3：卸载完成 ==================== -->
+      <div class="page" id="uninstall-finish">
+        <div class="finish-center">
+          <div class="success-icon warn">
+            <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+          </div>
+          <h2 class="finish-title">卸载完成</h2>
+          <p class="finish-desc">浮灵饰界 已从您的计算机中移除，感谢您的使用，期待再次相见！</p>
+
+          <div class="finish-actions">
+            <button class="btn-ghost" id="btnUninstallClose">立即关闭</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

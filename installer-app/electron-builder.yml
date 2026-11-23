@@ -1,0 +1,28 @@
+appId: com.fuling.shijie.installer
+# ⚠ 不能设为「浮灵饰界」：安装器 killAppProcesses 会 taskkill /IM 浮灵饰界.exe，
+# productName 同名时安装器会把自己杀掉（表现为装到 1% 闪退）。必须与主程序 exe 名不同。
+productName: 浮灵饰界安装器
+copyright: Copyright © 2026 浮灵饰界
+icon: icon.ico
+# ⚠ 产物名必须是纯 ASCII：GitHub Release 会把非 ASCII 资产名剥成残名（历史 404 根因），
+#   scripts/sync-update-manifest.js 也会直接拒绝中文文件名。
+#   productName 仍保留中文（窗口/进程名），仅文件名用 ASCII。
+artifactName: FulingShijie-Installer-Setup-v${version}.${ext}
+# ⚠ 必须排除 resources/ 与 dist/：默认 **/* 会把 app.zip(160M)+uninstaller.exe(67M)
+# 再打进 app.asar 一份，加上 extraResources 那份 = 双份 → 体积 300MB 暴涨到 516MB
+files:
+  - "**/*"
+  - "!resources/**"
+  - "!dist/**"
+  - "!icon.ico"
+# app.zip / rcedit.exe / uninstaller.exe 必须出现在 portable 的 resources 目录
+# （安装器运行时读 process.resourcesPath/app.zip），缺失会报「应用归档不存在」
+extraResources:
+  - from: resources
+    to: .
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+  icon: icon.ico

@@ -107,7 +107,7 @@
 
 | 平台 | 安装包 |
 | --- | --- |
-| Windows x64 | `FulingShijie-Setup-v1.0.12.exe` |
+| Windows x64 | `FulingShijie-Installer-Setup-v1.0.12.exe`（自制安装器：自定义安装页） |
 | macOS Intel | `FulingShijie-v1.0.12-x64.dmg` |
 | macOS Apple Silicon | `FulingShijie-v1.0.12-arm64.dmg` |
 | Linux x64 | `FulingShijie-v1.0.12.AppImage` / `FulingShijie-v1.0.12.deb` |
@@ -219,7 +219,8 @@ npm run dev          # 开发模式（含语法检查）
 npm start            # 启动应用
 npm run dev          # 开发模式（语法检查 + 启动）
 npm run check        # 一组基础自检
-npm run build:win    # 打包 Windows 安装包（dist/）
+npm run build:win    # 打包 Windows 自制安装器（installer-app，自定义安装页，dist/）
+npm run build:win-nsis # 可选：传统 NSIS 安装包（生成 latest.yml 供 electron-updater）
 npm run build:linux  # 打包 Linux（AppImage / deb）
 npm run build:mac    # 打包 macOS（dmg / zip）
 ```
@@ -255,7 +256,6 @@ npm run build:mac    # 打包 macOS（dmg / zip）
 
 以下内容**不包含**在本仓库中：
 
-- ❌ 安装器与卸载器工程（installer / uninstaller）
 - ❌ 第三方库完整源码（MinHook、Detours、Three.js 等，通过 npm 或自行获取）
 - ❌ 调试脚本、探测脚本、测试截图
 - ❌ 编译产物（DLL / EXE / 压缩包）

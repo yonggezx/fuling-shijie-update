@@ -1,6 +1,6 @@
 'use strict';
 /**
- * 连通器授权链路验证
+ * 连接器授权链路验证
  *   node scripts/test-connectors.js
  *
  * 覆盖：
@@ -45,12 +45,12 @@ const t = (name, cond, extra) => {
 };
 
 (async () => {
-  console.log('=== 连通器授权链路验证 ===\n');
+  console.log('=== 连接器授权链路验证 ===\n');
 
   console.log('[1] 目录加载');
   Connectors.load();
   const list = Connectors.listConnectors();
-  t('目录已加载', list.length > 0, list.length + ' 个连通器');
+  t('目录已加载', list.length > 0, list.length + ' 个连接器');
   t('解析无错误', Connectors._state.error === null, Connectors._state.error || '无');
   t('每个都有官方名称', list.every(c => c.officialName && c.officialName.length));
   // 图标已统一为曲别针线条，不再由配置下发 icon —— 断言"不下发"才是关键
@@ -114,7 +114,7 @@ const t = (name, cond, extra) => {
   r = Connectors.saveCredential('github', 'ghp_abc\ndef123456');
   t('带换行的令牌被拒（粘贴事故）', !r.success && /换行/.test(r.error), r.error);
   r = Connectors.saveCredential('nonexistent-connector', 'abcdefgh123');
-  t('未知连通器被拒', !r.success && /未找到/.test(r.error));
+  t('未知连接器被拒', !r.success && /未找到/.test(r.error));
 
   const TOKEN = 'ghp_realTokenValue1234567890';
   r = Connectors.saveCredential('github', TOKEN);

@@ -25,42 +25,59 @@ jobs:
       - name: 安装依赖
         run: npm ci
 
-      # ★ 必须用 build:win（NSIS 安装器）。历史上这里误用过 build:win-dir，
-      #   产物只有 dist/win-unpacked 目录，Release 里就完全看不到可安装的 exe。
-      - name: 打包 Windows（NSIS 安装包）
-        run: npm run build:win
+      # ★ Windows 产物 = 自制的 Electron 安装器（installer-app：自定义安装页），
+      #   不是 electron-builder 默认的 NSIS 界面。
+      #   更新公告只放在应用内「关于 → 更新公告」（src/renderer/data/changelog.*），
+      #   不要做进安装器。
+      #   历史问题：流水线只跑 build:win(NSIS)，且 installer-app 被 .gitignore，
+      #   CI 里根本没有这套工程 → 发出去的安装包没有自制安装页。
+      - name: 打包 Windows 应用（win-unpacked）
+        run: npm run build:win-dir
 
-      - name: 校验产物（拒绝发布不可安装的产物）
+      - name: 构建自制安装器（自定义安装页）
+        run: npm run build:web-installer
+
+      - name: 校验产物（必须是自制安装器，且带本次版本公告）
         shell: pwsh
         run: |
           Get-ChildItem dist | Format-Table Name, Length
-          $exe = Get-ChildItem dist -Filter *.exe -File | Where-Object { $_.Name -notmatch 'unpacked' }
-          if (-not $exe) { throw '打包失败：dist 下没有 .exe 安装包（只有 win-unpacked 目录不算），拒绝发布' }
-          foreach ($f in $exe) { Write-Host ("安装包: {0}  {1:N1} MB" -f $f.Name, ($f.Length / 1MB)) }
-          if (-not (Test-Path -LiteralPath 'dist/latest.yml')) { throw '缺少 dist/latest.yml：应用内自动更新（electron-updater）会失效' }
-          Write-Host '产物校验通过'
+          $ver = "${{ github.ref_name }}" -replace '^v', ''
+          $exe = Get-ChildItem dist -Filter 'FulingShijie-Installer-Setup-v*.exe' -File
+          if (-not $exe) { throw '打包失败：dist 下没有 FulingShijie-Installer-Setup-v*.exe（自制安装器未产出），拒绝发布' }
+          foreach ($f in $exe) {
+            if ($f.Length -lt 200MB) { throw ("安装器体积异常（{0:N1} MB），疑似缺少 app.zip/uninstaller.exe" -f ($f.Length / 1MB)) }
+            Write-Host ("安装器: {0}  {1:N1} MB" -f $f.Name, ($f.Length / 1MB))
+          }
+          $changelogPath = 'src/renderer/data/changelog.json'
+          if (-not (Test-Path -LiteralPath $changelogPath)) { throw "缺少 $changelogPath：应用内「关于 → 更新公告」会为空" }
+          $entries = Get-Content -LiteralPath $changelogPath -Raw | ConvertFrom-Json
+          if (-not ($entries | Where-Object { $_.version -eq $ver })) { throw "changelog.json 缺少 v$ver 的公告条目：关于页更新公告不会显示本次更新" }
+          $jsPath = 'src/renderer/data/changelog.js'
+          if (-not (Select-String -LiteralPath $jsPath -Pattern ('"version": "' + $ver + '"') -Quiet)) { throw "changelog.js 未同步 v$ver：关于页读的是 window.CHANGELOG，公告会停在旧版本（请跑 node scripts/sync-changelog.js）" }
+          Write-Host "产物校验通过（自制安装器 + 关于页 v$ver 更新公告已同步）"
 
-      - name: 创建 Release 并上传 Windows 安装包
+      - name: 导出更新公告（Release 正文 + 客户端更新清单共用）
+        run: node scripts/export-release-notes.js --version=${{ github.ref_name }} --out=.release-notes.md
+
+      - name: 创建 Release 并上传自制安装器
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          generate_release_notes: true
+          body_path: .release-notes.md
           files: |
-            dist/*.exe
-            dist/*.blockmap
-            dist/*.yml
+            dist/FulingShijie-Installer-Setup-v*.exe
 
-      # 更新清单：客户端「检查更新 / 完整安装包」读的就是这两个文件，
+      # 更新清单：客户端「检查更新 / 完整安装包」读的就是这些文件，
       # 必须指向本次 Release 真实存在的安装包名，否则会 404 或下到装不了的东西。
-      # 失败不影响已发布的安装包，但要显式报错提醒。
+      # 注意 update/ 在 .gitignore 里（本地产物目录），提交时必须 git add -f。
       - name: 同步更新清单到 main 与 gh-pages
         continue-on-error: true
         shell: bash
         run: |
           set -e
-          INSTALLER=$(ls dist/*.exe | head -n 1)
-          node scripts/sync-update-manifest.js --version="${{ github.ref_name }}" --installer="$INSTALLER"
+          INSTALLER=$(ls dist/FulingShijie-Installer-Setup-v*.exe | head -n 1)
+          node scripts/sync-update-manifest.js --version="${{ github.ref_name }}" --installer="$INSTALLER" --notes-file=.release-notes.md
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           for BR in main gh-pages; do
@@ -69,7 +86,7 @@ jobs:
             git worktree add "$WT" "origin/$BR" || { echo "::warning::分支 $BR 检出失败，跳过"; continue; }
             mkdir -p "$WT/update" || true
             cp update/*.json "$WT/update/"
-            ( cd "$WT" && git add update \
+            ( cd "$WT" && git add -f update \
               && if ! git diff --cached --quiet; then \
                    git commit -m "chore(update): 同步更新清单到 ${{ github.ref_name }}"; \
                    git push origin "HEAD:$BR"; \
@@ -118,12 +135,68 @@ jobs:
           cache: 'npm'
       - name: 安装依赖
         run: npm ci
-      - name: 打包 macOS
+
+      # 签名证书：把 Developer ID Application 证书导出为 .p12，base64 后存
+      # MAC_CERT_P12_BASE64，密码存 MAC_CERT_PASSWORD。
+      # 没配置时下面的构建会降级为未签名包（仍可产出 dmg，只是会被 Gatekeeper 拦）。
+      - name: 准备签名证书
+        env:
+          MAC_CERT_P12_BASE64: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$MAC_CERT_P12_BASE64" ]; then
+            python3 -c "import base64,os,sys; open(sys.argv[1],'wb').write(base64.b64decode(sys.argv[2]))" \
+              "$RUNNER_TEMP/cert.p12" "$MAC_CERT_P12_BASE64"
+            echo "CSC_LINK=$RUNNER_TEMP/cert.p12" >> "$GITHUB_ENV"
+            echo "签名证书已就绪"
+            if [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+              echo "MAC_SIGNED=1" >> "$GITHUB_ENV"
+            else
+              echo "::warning::已配置签名证书但缺少公证凭据，产物会被 Gatekeeper 拦截"
+            fi
+          else
+            echo "::warning::未配置 MAC_CERT_P12_BASE64，本次 macOS 产物为未签名包"
+          fi
+
+      - name: 校验品牌素材
+        run: |
+          for f in assets/dmg/background.png assets/dmg/background@2x.png assets/icons/icon.icns; do
+            if [ ! -f "$f" ]; then echo "::error::缺少 $f，dmg 品牌化会退回默认样式"; exit 1; fi
+          done
+          echo "dmg 背景与 icns 就绪"
+
+      - name: 打包 macOS（品牌化 dmg + 签名 + 公证）
+        env:
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npm run build:mac
+
       - name: 校验产物
         run: |
           ls -la dist
           ls dist/*.dmg dist/*.zip >/dev/null
+          for app in dist/mac/*.app dist/mac-arm64/*.app; do
+            [ -d "$app" ] || continue
+            echo "== $app"
+            codesign --verify --deep --strict --verbose=2 "$app" \
+              || echo "::warning::$app 未签名或签名校验失败"
+            if [ "${MAC_SIGNED:-0}" = "1" ]; then
+              spctl -a -vvv -t exec "$app" \
+                || { echo "::error::$app 未通过 Gatekeeper（签名或公证不完整）"; exit 1; }
+            fi
+          done
+          for dmg in dist/*.dmg; do
+            echo "== $dmg"
+            if [ "${MAC_SIGNED:-0}" = "1" ]; then
+              spctl -a -vvv -t open --context context:primary-signature "$dmg" \
+                || echo "::warning::dmg 外壳未公证（内部 app 已公证，安装不受影响）"
+            fi
+          done
+
       - name: 上传到 Release
         uses: softprops/action-gh-release@v2
         with:

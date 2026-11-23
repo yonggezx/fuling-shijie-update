@@ -1,7 +1,7 @@
 /**
  * 智能商城前端模块（本地，无服务器）
  * ============================================================
- * 入口：聊天页顶部工具栏的「智能商城」按钮（与「连通器」「安全中心」并列）。
+ * 入口：聊天页顶部工具栏的「智能商城」按钮（与「连接器」「安全中心」并列）。
  *
  * 形态参考：ModelScope 智能工坊（卡片式分类商城，点击下载并启用）。
  * 三类条目：技能（能力包）/ MCP / 智能体。
@@ -69,7 +69,7 @@
 
   // 自包含样式（注入一次）
   // 毛玻璃（glassmorphism）：参照魔搭社区（ModelScope）智能工坊的轻透玻璃质感。
-  // 全部引用 style.css 的玻璃变量组（--glass-*），随深浅主题自动切换（参考连通器）。
+  // 全部引用 style.css 的玻璃变量组（--glass-*），随深浅主题自动切换（参考连接器）。
   const CSS = `
   .market-overlay{position:fixed;inset:0;background:var(--glass-overlay-bg);backdrop-filter:blur(var(--glass-overlay-blur)) saturate(130%);display:flex;align-items:center;justify-content:center;z-index:9990;}
   .market-modal{width:860px;height:640px;max-width:96vw;max-height:92vh;background:var(--glass-panel-bg);backdrop-filter:blur(var(--glass-panel-blur)) saturate(170%);border:1px solid var(--glass-panel-border);border-radius:16px;display:flex;flex-direction:column;overflow:hidden;box-shadow:var(--glass-panel-shadow);color:var(--glass-text);}
@@ -388,7 +388,7 @@
         const isHosted = it.hosted;
         const lines = isHosted ? [
           '<b>托管服务（Hosted）</b>：该 MCP 由魔搭社区托管运行，不提供本地 stdio 启动配置。',
-          '使用方式：登录 <a href="https://modelscope.cn/mcp" target="_blank" rel="noopener" class="market-link">魔搭 MCP 广场</a>，打开该服务的详情页获取专属连接信息（连接地址由平台按账号分配、有时效），再到应用「连通器」中手动添加。',
+          '使用方式：登录 <a href="https://modelscope.cn/mcp" target="_blank" rel="noopener" class="market-link">魔搭 MCP 广场</a>，打开该服务的详情页获取专属连接信息（连接地址由平台按账号分配、有时效），再到应用「连接器」中手动添加。',
           '为什么不在商店直接启用：托管连接地址为登录后动态分配且 24 小时有效，官方标注请勿泄漏，不适合写死在本地配置。'
         ] : [
           '<b>授权说明</b>：该条目来自魔搭 MCP 广场，需要 API 密钥等授权信息才能启动。',

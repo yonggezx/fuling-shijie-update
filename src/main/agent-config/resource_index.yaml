@@ -177,7 +177,7 @@ resources:
   - id: connectors
     file: connectors.yaml
     format: yaml
-    title: 连通器目录
+    title: 连接器目录
     description: >-
       需要用户授权的外部服务清单：官方名称、品牌色、授权流程
       （oauth=标准授权端点可自动回调 / console=无标准端点需自助开通 / none=无需授权）、
@@ -187,7 +187,7 @@ resources:
     consumers:
       - src/main/ipc/connectors.js     # listConnectors / beginOAuth / saveCredential
       - src/renderer/js/connector-ui.js
-    required: false                  # 缺失时连通器入口显示为空，不影响其他功能
+    required: false                  # 缺失时连接器入口显示为空，不影响其他功能
     shape:
       root: connectors
       type: array
@@ -203,9 +203,9 @@ resources:
       - callbackPortInAllowlist       # 解析后的回调端口必须在 callbackPorts 白名单内
       - noSecrets                     # 密钥只写占位
     notes: >-
-      与 mcp-servers.yaml 的分工：MCP 是本机子进程（stdio），连通器是外部账号（HTTP）。
-      授权状态就是连通器可用性的前提 —— 没授权 = 调不通。
-      页面层级：列表页（全部连通器）→ 详情页（只显示所选的那一个，标题栏有返回按钮）。
+      与 mcp-servers.yaml 的分工：MCP 是本机子进程（stdio），连接器是外部账号（HTTP）。
+      授权状态就是连接器可用性的前提 —— 没授权 = 调不通。
+      页面层级：列表页（全部连接器）→ 详情页（只显示所选的那一个，标题栏有返回按钮）。
 
 # ── 不在本索引管辖范围的文件 ────────────────────────────────────────────────
 # 凭证不进配置目录，走独立加密存储（safeStorage/DPAPI）。
