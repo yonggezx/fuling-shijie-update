@@ -508,7 +508,13 @@ contextBridge.exposeInMainWorld('api', {
     setEnabled: (id, enabled) => ipcRenderer.invoke('marketplace:set-enabled', id, enabled),
     status: () => ipcRenderer.invoke('marketplace:status'),
     importFile: () => ipcRenderer.invoke('marketplace:import-file'),
-    importUrl: (url) => ipcRenderer.invoke('marketplace:import-url', url)
+    importUrl: (url) => ipcRenderer.invoke('marketplace:import-url', url),
+    onProgress: (listener) => {
+      if (typeof listener !== 'function') return () => {};
+      const handler = (_e, p) => { try { listener(p); } catch (e) { /* 忽略 */ } };
+      ipcRenderer.on('marketplace:progress', handler);
+      return () => ipcRenderer.removeListener('marketplace:progress', handler);
+    }
   }
 });
 

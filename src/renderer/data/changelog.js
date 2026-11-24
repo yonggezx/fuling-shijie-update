@@ -3,9 +3,15 @@
 //   改公告请编辑同目录 changelog.json，构建前会自动同步到这里。
 window.CHANGELOG = [
   {
+    "version": "1.0.14",
+    "date": "2026-11-24",
+    "title": "修复已知问题",
+    "changes": []
+  },
+  {
     "version": "1.0.13",
     "date": "2026-11-23",
-    "title": "v1.0.13 更新：macOS 品牌化安装包与发布链路修复",
+    "title": "macOS 品牌化安装包与发布链路修复",
     "changes": [
       {
         "type": "feature",
@@ -42,7 +48,7 @@ window.CHANGELOG = [
   {
     "version": "1.0.12",
     "date": "2026-10-27",
-    "title": "v1.0.12 更新：智能体角色选择与「连接器」文案修复",
+    "title": "智能体角色选择与「连接器」文案修复",
     "changes": [
       {
         "type": "fix",
@@ -79,7 +85,7 @@ window.CHANGELOG = [
   {
     "version": "1.0.11",
     "date": "2026-10-13",
-    "title": "v1.0.11 更新：侧边栏与产物面板修复",
+    "title": "侧边栏与产物面板修复",
     "changes": [
       {
         "type": "fix",
@@ -106,7 +112,7 @@ window.CHANGELOG = [
   {
     "version": "1.0.10",
     "date": "2026-10-13",
-    "title": "v1.0.10 更新：侧边栏刷新修复",
+    "title": "侧边栏刷新修复",
     "changes": [
       {
         "type": "fix",
@@ -118,7 +124,7 @@ window.CHANGELOG = [
   {
     "version": "1.0.8",
     "date": "2026-10-10",
-    "title": "v1.0.8 更新",
+    "title": "修复已知问题",
     "changes": [
       {
         "type": "improvement",
@@ -130,7 +136,7 @@ window.CHANGELOG = [
   {
     "version": "1.0.7",
     "date": "2026-09-12",
-    "title": "v1.0.7 更新",
+    "title": "修复已知问题",
     "changes": [
       {
         "type": "feature",

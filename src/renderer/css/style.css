@@ -5635,6 +5635,9 @@ select:focus {
   width: 100%;
   height: 100%;
   display: block;
+  /* 角色图标是线稿：父级 .el-icon svg 的 fill:currentColor 会把未设 fill 的路径全填白，
+     这里强制回到 fill:none，保留原图的描边与局部实心点 */
+  fill: none;
 }
 
 .role-item-icon {

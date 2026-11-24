@@ -33,6 +33,15 @@
       .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
+  function fmtSize(n) {
+    const v = Number(n) || 0;
+    if (v <= 0) return '';
+    if (v < 1024) return v + ' B';
+    if (v < 1024 * 1024) return (v / 1024).toFixed(v < 10 * 1024 ? 1 : 0) + ' KB';
+    if (v < 1024 * 1024 * 1024) return (v / 1024 / 1024).toFixed(v < 10 * 1024 * 1024 ? 1 : 0) + ' MB';
+    return (v / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+  }
+
   // 中性类型图标：仅当条目没有真实图标 / 真实图标加载失败时兜底，不代替真实来源图标
   function typeGlyph(type) {
     const common = 'width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"';
@@ -103,6 +112,7 @@
   .market-badge.off{background:var(--badge-off-bg);color:var(--badge-off-fg);}
   .market-badge.auth{background:var(--badge-auth-bg);color:var(--badge-auth-fg);}
   .market-badge.hosted{background:var(--badge-hosted-bg);color:var(--badge-hosted-fg);}
+  .market-badge.size{color:var(--glass-text);opacity:.75;border:1px solid var(--glass-surface-border);}
   .market-card-desc{font-size:12px;color:var(--glass-muted);line-height:1.5;min-height:34px;overflow:hidden;}
   .market-card-actions{display:flex;gap:8px;margin-top:auto;}
   .market-card-actions .btn{flex:1;justify-content:center;}
@@ -123,6 +133,15 @@
   .market-link{color:var(--link-fg);}
   .market-config-hint{font-size:12px;color:var(--hint-fg);line-height:1.6;}
   .market-config-secure{font-size:11px;color:var(--secure-fg);}
+  /* 下载进度条：直接长在每张卡片里，跟着这张卡片的真实下载/解压/打包进度走 */
+  .market-card-progress{display:flex;flex-direction:column;gap:5px;padding:7px 8px;border-radius:8px;
+    background:var(--glass-input-bg);border:1px solid var(--glass-surface-border);}
+  .market-card-progress-head{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;}
+  .market-card-progress-phase{color:var(--glass-text);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .market-card-progress-pct{font-variant-numeric:tabular-nums;color:var(--glass-muted);flex:none;}
+  .market-card-progress-track{height:6px;border-radius:5px;background:var(--glass-surface);overflow:hidden;border:1px solid var(--glass-surface-border);}
+  .market-card-progress-bar{height:100%;width:0%;background:linear-gradient(90deg,#5b7cfa,#8b5cf6);transition:width .3s cubic-bezier(.2,.8,.2,1);}
+  .market-card-progress-detail{font-size:10px;color:var(--glass-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   `;
 
   const MarketplaceUI = {
@@ -133,6 +152,9 @@
     _inited: false,
     _loaded: false,
     _busy: new Set(),
+    // 每张卡片自己的真实进度（id → {phase, percent, detail}），不共用底部面板
+    _progress: new Map(),
+    _progressTimers: new Map(),
     // 分页渲染：避免一次性渲染上千张卡片导致卡顿
     PAGE_SIZE: 60,
     _page: 1,
@@ -222,6 +244,30 @@
       const stateTxt = it.installed ? (enabled ? '已启用' : '已停用') : '未安装';
       const stateCls = it.installed ? (enabled ? 'ok' : 'off') : '';
       const needsAuth = !!(it.auth && it.auth.fields && it.auth.fields.length);
+      const busy = this._busy.has(it.id);
+      const prog = this._progress.get(it.id);
+      const showProg = !!(prog || busy);
+      const progPct = prog ? Math.max(0, Math.min(100, Number(prog.percent) || 0)) : 0;
+      const progPhase = prog ? (prog.phase || '下载中') : '准备下载';
+      const progDetail = prog ? (prog.detail || '') : '';
+      let sizeTxt = '';
+      if (it.installed && it.packageBytes > 0) {
+        sizeTxt = fmtSize(it.packageBytes) + (it.packageFiles ? ' · ' + it.packageFiles + ' 个文件' : '');
+      } else if (!it.installed && it.type === 'agent' && (it.skillCount || it.mcpCount)) {
+        const parts = [];
+        if (it.skillCount) parts.push(it.skillCount + ' 个技能');
+        if (it.mcpCount) parts.push(it.mcpCount + ' 个 MCP');
+        sizeTxt = '含 ' + parts.join(' + ');
+      } else if (it.installed && it.type === 'agent' && (it.skillCount || it.mcpCount)) {
+        const parts = [];
+        if (it.skillCount) parts.push(it.skillCount + ' 个技能');
+        if (it.mcpCount) parts.push(it.mcpCount + ' 个 MCP');
+        sizeTxt = '含 ' + parts.join(' + ') + ' · 待重建包';
+      } else if (!it.installed && (it.sourceKind === 'github' || it.sourceKind === 'url')) {
+        sizeTxt = '下载后显示包大小';
+      } else if (!it.installed && it.estimatedBytes > 0) {
+        sizeTxt = '提示词 ' + fmtSize(it.estimatedBytes);
+      }
       let actions = '';
       if (it.hosted) {
         actions = '<button class="btn btn-sm market-btn-ghost" data-act="info" data-id="' + esc(it.id) + '">查看说明</button>';
@@ -236,7 +282,8 @@
             + '<button class="btn btn-sm market-btn-ghost" data-act="uninstall" data-id="' + esc(it.id) + '">卸载</button>';
         }
       } else if (!it.installed) {
-        actions = '<button class="btn btn-sm market-btn-primary" data-act="install" data-id="' + esc(it.id) + '">下载并启用</button>';
+        actions = '<button class="btn btn-sm market-btn-primary" data-act="install" data-id="' + esc(it.id) + '"'
+          + (busy ? ' disabled' : '') + '>' + (busy ? '下载并打包中…' : '下载并启用') + '</button>';
       } else if (enabled) {
         actions = '<button class="btn btn-sm market-btn-ghost" data-act="disable" data-id="' + esc(it.id) + '">停用</button>'
           + '<button class="btn btn-sm market-btn-ghost" data-act="uninstall" data-id="' + esc(it.id) + '">卸载</button>';
@@ -244,7 +291,7 @@
         actions = '<button class="btn btn-sm market-btn-primary" data-act="enable" data-id="' + esc(it.id) + '">启用</button>'
           + '<button class="btn btn-sm market-btn-ghost" data-act="uninstall" data-id="' + esc(it.id) + '">卸载</button>';
       }
-      return '<div class="market-card">'
+      return '<div class="market-card" data-card-id="' + esc(it.id) + '">'
         + '<div class="market-card-top">'
         + '<div class="market-card-ico">' + iconHtml(it) + '</div>'
         + '<div class="market-card-info">'
@@ -256,8 +303,17 @@
         + (needsAuth ? '<span class="market-badge auth">需授权</span>' : '')
         + '<span class="market-badge">v' + esc(it.version || '1.0') + '</span>'
         + '<span class="market-badge ' + stateCls + '">' + stateTxt + '</span>'
+        + (sizeTxt ? '<span class="market-badge size" title="' + esc(it.packagePath || '') + '">' + esc(sizeTxt) + '</span>' : '')
         + '</div></div></div>'
         + '<div class="market-card-desc">' + esc(it.description || '') + '</div>'
+        + '<div class="market-card-progress" data-progress-id="' + esc(it.id) + '"'
+        + (showProg ? '' : ' style="display:none"') + '>'
+        + '<div class="market-card-progress-head">'
+        + '<span class="market-card-progress-phase">' + esc(progPhase) + '</span>'
+        + '<span class="market-card-progress-pct">' + progPct + '%</span></div>'
+        + '<div class="market-card-progress-track"><div class="market-card-progress-bar" style="width:' + progPct + '%"></div></div>'
+        + '<div class="market-card-progress-detail">' + esc(progDetail) + '</div>'
+        + '</div>'
         + '<div class="market-card-actions">' + actions + '</div>'
         + '</div>';
     },
@@ -300,6 +356,10 @@
     async act(act, id) {
       if (this._busy.has(id)) return;
       this._busy.add(id);
+      if (act === 'install') {
+        this.showProgress({ id, phase: '准备下载', percent: 1, detail: '正在准备安装包' });
+        try { this.render(); } catch (e) { /* 忽略 */ }
+      }
       try {
         let res;
         if (act === 'install') res = await window.api.marketplace.install(id);
@@ -309,15 +369,27 @@
         else if (act === 'config') { this.openConfig(id); return; }
         else if (act === 'info') { this.openInfo(id); return; }
         if (res && res.success) {
-          this.toast(res.detail || '操作成功', true);
+          // 下载完成的提示只保留一句结果，路径/技能数/包大小都在卡片上，不再堆到 toast 里。
+          const okMsg = act === 'install' ? '下载成功'
+            : act === 'uninstall' ? '已卸载'
+              : act === 'enable' ? '已启用'
+                : act === 'disable' ? '已停用'
+                  : (res.detail || '操作成功');
+          this.toast(okMsg, true);
+          this.showProgress({ id, phase: '完成', percent: 100, detail: act === 'install' ? '下载成功' : '' });
           await this.load(true);
+          // 智能体安装/卸载/启停后同步角色列表，不用重开应用或重开角色面板
+          try { if (typeof window.loadAgentRoles === 'function') await window.loadAgentRoles(); } catch (e) { /* 忽略 */ }
         } else {
+          this.clearProgress(id);
           this.toast((res && res.error) || '操作失败', false);
         }
       } catch (e) {
+        this.clearProgress(id);
         this.toast('操作失败：' + (e.message || e), false);
       } finally {
         this._busy.delete(id);
+        try { this.render(); } catch (e) { /* 忽略 */ }
       }
     },
 
@@ -445,6 +517,71 @@
       }
     },
 
+    showProgress(p) {
+      if (!p || typeof p !== 'object') return;
+      if (p.id === '__refresh__') {
+        if (this._loaded) { this._loaded = false; this.load(true); }
+        return;
+      }
+      try {
+        const id = String(p.id || '');
+        if (!id) return;
+        const prev = this._progress.get(id);
+        // 只前进不倒退，避免异步阶段回跳。
+        const pct = Math.max(prev ? Number(prev.percent) || 0 : 0, Number(p.percent) || 0);
+        this._progress.set(id, {
+          phase: String(p.phase || '下载中'),
+          percent: Math.max(0, Math.min(100, Math.round(pct))),
+          detail: String(p.detail || '')
+        });
+        this.updateCardProgress(id);
+
+        clearTimeout(this._progressTimers.get(id));
+        if (pct >= 100) {
+          // 完成后在卡片上停 1.8 秒再收起，避免「一闪就没」。
+          const t = setTimeout(() => {
+            this._progress.delete(id);
+            this._progressTimers.delete(id);
+            this.updateCardProgress(id);
+          }, 1800);
+          this._progressTimers.set(id, t);
+        } else {
+          this._progressTimers.delete(id);
+        }
+      } catch (e) { /* 忽略 */ }
+    },
+    // 进度只更新这一张卡片，不整页重渲染，不闪烁。
+    updateCardProgress(id) {
+      const cards = document.querySelectorAll('.market-card');
+      for (const card of cards) {
+        if (card.dataset.cardId !== id) continue;
+        const box = card.querySelector('.market-card-progress');
+        if (!box) return;
+        const prog = this._progress.get(id);
+        if (!prog) {
+          box.style.display = 'none';
+          return;
+        }
+        box.style.display = 'flex';
+        const pctEl = box.querySelector('.market-card-progress-pct');
+        const phaseEl = box.querySelector('.market-card-progress-phase');
+        const barEl = box.querySelector('.market-card-progress-bar');
+        const detailEl = box.querySelector('.market-card-progress-detail');
+        if (pctEl) pctEl.textContent = prog.percent + '%';
+        if (phaseEl) phaseEl.textContent = prog.phase;
+        if (barEl) barEl.style.width = prog.percent + '%';
+        if (detailEl) detailEl.textContent = prog.detail;
+        return;
+      }
+    },
+    clearProgress(id) {
+      const key = String(id || '');
+      clearTimeout(this._progressTimers.get(key));
+      this._progressTimers.delete(key);
+      this._progress.delete(key);
+      this.updateCardProgress(key);
+    },
+
     toast(msg, ok) {
       try {
         let el = document.getElementById('market-ui-toast');
@@ -461,7 +598,7 @@
         el.style.color = '#fff';
         el.style.opacity = '1';
         clearTimeout(this._toastTimer);
-        this._toastTimer = setTimeout(() => { el.style.opacity = '0'; }, 2600);
+        this._toastTimer = setTimeout(() => { el.style.opacity = '0'; }, 3600);
       } catch (e) { /* 忽略 */ }
     },
 
@@ -557,6 +694,13 @@
       if (infoOk) infoOk.addEventListener('click', () => this.closeInfo());
       const infoOv = document.getElementById('market-info-overlay');
       if (infoOv) infoOv.addEventListener('click', e => { if (e.target === infoOv) this.closeInfo(); });
+
+      // 主进程真实下载/解压/打包进度
+      try {
+        if (window.api && window.api.marketplace && window.api.marketplace.onProgress) {
+          this._progressUnsub = window.api.marketplace.onProgress(p => this.showProgress(p));
+        }
+      } catch (e) { /* 忽略 */ }
     }
   };
 

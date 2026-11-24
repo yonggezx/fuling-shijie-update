@@ -207,6 +207,8 @@ marketplace:
         3. 结论可追溯：标明口径、范围与不确定性
         4. 能用图表/表格呈现的比较与分布，尽量可视化
       tools: [run_shell, read_file, write_file, calculator, web_search, web_fetch, directory_list, file_search, todo_write, memory_search]
+      skills: [xlsx, echarts]
+      mcps: [可视化图表-MCP-Server]
       temperature: 0.3
       maxIterations: 10
       allowDangerous: false
@@ -232,6 +234,7 @@ marketplace:
         3. 译文符合目标语言表达习惯，流畅自然
         4. 遇歧义给出注释说明，必要时提供多个候选
       tools: [read_file, write_file, web_search, memory_search]
+      skills: [docx, pdf]
       temperature: 0.4
       maxIterations: 6
       allowDangerous: false
@@ -260,6 +263,7 @@ marketplace:
         2. 实时信息（天气/门票/营业时间）必须检索确认，不凭印象
         3. 行程按天排布，标注时间与地点，便于直接执行
       tools: [web_search, web_fetch, calculator, todo_write, memory_search]
+      skills: [docx]
       temperature: 0.6
       maxIterations: 10
       allowDangerous: false
@@ -403,6 +407,7 @@ marketplace:
         2. 报告给出置信度与证据缺口，不夸大结论
         3. 可对比/分布/流程的内容用表格或图表呈现
       tools: [web_search, web_fetch, calculator, todo_write, memory_search, read_file, write_file]
+      skills: [pdf, docx]
       temperature: 0.3
       maxIterations: 16
       allowDangerous: false
@@ -431,6 +436,7 @@ marketplace:
         1. 不越权替用户决定剧情走向，重大转折先给选项
         2. 尊重用户对角色/世界观的所有设定，不擅自推翻
       tools: [read_file, write_file, todo_write, memory_search]
+      skills: [doc-coauthoring, docx]
       temperature: 0.8
       maxIterations: 12
       allowDangerous: false
@@ -443,6 +449,15 @@ marketplace:
     version: "1.0.0"
     description: 参考魔搭社区「蚂蚁可视化图表 MCP」（25+ 图表类型）能力整理的本地角色：数据 → 选图 → 成图 → 解读。
     icon: {kind: emoji, value: "📊"}
+    # 真实依赖：不再只给一段提示词。下载时会把这两个技能包和图表 MCP 一起打进 agent 安装包。
+    skills:
+      - name: xlsx
+        description: 读取/处理 Excel 数据，生成带图表的工作簿
+      - name: echarts
+        description: 用 ECharts 生成图表与可视化 HTML
+    mcps:
+      - name: 可视化图表-MCP-Server
+        description: 蚂蚁 AntV 图表 MCP，支持 20+ 图表类型
     role:
       id: agent-ms-chartist
       name: 数据图表师
@@ -453,12 +468,14 @@ marketplace:
         ## 工作流程
         1. 明确数据与想表达的观点：比较、趋势、占比、分布还是构成
         2. 选图：趋势→折线；占比→饼/环形；比较→柱/条形；分布→散点/直方图；流程→流程图
-        3. 成图：用可视化工具生成带坐标轴、标签、图例的可读图表
+        3. 成图：优先用 echarts 技能生成图表；表格数据先用 xlsx 技能读取，再交给图表 MCP 出图
         4. 解读：一句话结论 + 关键数字 + 边界说明
         ## 规范
         1. 图表必须真实反映数据，不美化、不误导（坐标轴从真实最小值起标）
         2. 数字来自输入或可复现计算，标注口径
-      tools: [calculator, read_file, write_file, todo_write, memory_search]
+      skills: [xlsx, echarts]
+      mcps: [可视化图表-MCP-Server]
+      tools: [run_shell, calculator, read_file, write_file, directory_list, file_search, todo_write, memory_search]
       temperature: 0.4
       maxIterations: 10
       allowDangerous: false

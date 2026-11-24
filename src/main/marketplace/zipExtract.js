@@ -24,12 +24,17 @@ function u32(b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 
  * 解压 zip 内容到目标目录。
  * @param {Buffer} buf   zip 的完整字节
  * @param {string} dest  目标目录（绝对路径）
+ * @param {{only?:string,onProgress?:function}} [opts]
+ *        only: 只解压该子目录（例如 skills/xlsx），避免把整仓库上千个文件都落盘
+ *        onProgress: ({done,total,name}) 进度回调
  * @returns {Promise<{files:string[], totalBytes:number}>}
  */
-async function extractZip(buf, dest) {
+async function extractZip(buf, dest, opts = {}) {
   const fs = require('fs');
   const { promisify } = require('util');
   const mkdir = promisify(fs.mkdir);
+  const writeFile = promisify(fs.writeFile);
+  const inflate = promisify(zlib.inflateRaw);
 
   if (buf.length < 22) throw new Error('不是有效的 ZIP（文件过小）');
   if (buf.readUInt32LE(0) !== 0x04034b50) throw new Error('不是有效的 ZIP（缺少本地文件头）');
@@ -79,18 +84,32 @@ async function extractZip(buf, dest) {
   const commonTop = firsts.length && firsts.every(f => f === firsts[0])
     ? firsts[0] : null;
 
+  // 只解压指定子目录：整仓库 zip 里成百上千个文件不必全部落盘。
+  let onlyAbs = null;
+  if (opts.only) {
+    let relParts = String(opts.only).replace(/\\/g, '/').split('/').filter(Boolean);
+    // 调用方可能传带仓库顶层目录的路径（repo/skills/x），也可能只传 skills/x，两种都认。
+    if (commonTop && relParts[0] === commonTop) relParts = relParts.slice(1);
+    onlyAbs = path.resolve(dest, relParts.join('/'));
+  }
+  const included = [];
   for (const ent of entries) {
-    const { name, method, compSize, uncompSize, dataStart } = ent;
-    // 路径穿越防护 + 规整（若存在公共顶层目录则剥掉它）
-    const clean = normalizePath(name, dest, commonTop);
-    if (!clean) throw new Error('ZIP 条目含非法路径: ' + name);
+    const clean = normalizePath(ent.name, dest, commonTop);
+    if (!clean) throw new Error('ZIP 条目含非法路径: ' + ent.name);
+    if (onlyAbs && clean !== onlyAbs && !clean.startsWith(onlyAbs + path.sep)) continue;
+    included.push({ ...ent, clean });
+  }
+  if (opts.only && !included.length) throw new Error('压缩包中未找到目录: ' + opts.only);
 
+  let done = 0;
+  for (const ent of included) {
+    const { name, method, compSize, uncompSize, dataStart, clean } = ent;
     if (uncompSize > MAX_FILE) throw new Error('ZIP 单文件过大: ' + name + ' (' + uncompSize + ')');
 
     const raw = buf.slice(dataStart, dataStart + compSize);
     let data;
     if (method === 0) data = raw;
-    else if (method === 8) data = zlib.inflateRawSync(raw);
+    else if (method === 8) data = await inflate(raw);
     else throw new Error('不支持的压缩方式(' + method + ')：' + name);
 
     if (data.length !== uncompSize) throw new Error('ZIP 解压长度不一致: ' + name);
@@ -98,8 +117,12 @@ async function extractZip(buf, dest) {
     if (totalBytes > MAX_TOTAL) throw new Error('ZIP 解压总量超限');
 
     await mkdir(path.dirname(clean), { recursive: true });
-    fs.writeFileSync(clean, data);
+    await writeFile(clean, data);
     files.push(clean);
+    done++;
+    if (opts.onProgress) {
+      try { opts.onProgress({ done, total: included.length, name }); } catch (e) { /* 忽略 */ }
+    }
   }
 
   return { files, totalBytes };

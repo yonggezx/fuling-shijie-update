@@ -730,7 +730,10 @@ let state = {
   activeProviderId: null,
   settings: {},
   systemInfo: {},
-  isStreaming: false
+  isStreaming: false,
+  currentRoleId: 'general',   // 当前智能体角色
+  agentRoles: [],             // 角色列表
+  agentTools: []              // 主进程注册的工具清单
 };
 
 // 临时变量：用于在 agent-done 事件和消息保存逻辑之间传递 usage 和 elapsedMs
@@ -13123,16 +13126,20 @@ async function loadAgentRoles() {
 function renderRoleList() {
   const list = document.getElementById('role-list');
   if (!list) return;
-  list.innerHTML = state.agentRoles.map(role => `
+  list.innerHTML = state.agentRoles.map((role, index) => `
     <div class="role-item ${role.id === state.currentRoleId ? 'active' : ''}" data-role-id="${role.id}">
-      <div class="role-item-icon">${window.RoleIcons ? window.RoleIcons.getRoleIcon(role.id, '28px') : window.ElIcons.ICONS.ai}</div>
+      <div class="role-item-icon">${window.RoleIcons ? window.RoleIcons.getRoleIcon(role, '28px') : window.ElIcons.ICONS.ai}</div>
       <div class="role-item-info">
         <div class="role-item-name">${role.name}</div>
         <div class="role-item-desc">${role.description || ''}</div>
       </div>
-      ${role.isPreset ? '' : '<button class="role-item-edit" data-edit="${role.id}">编辑</button><button class="role-item-delete" data-delete="${role.id}">×</button>'}
+      ${role.isPreset ? '' : `<button class="role-item-edit" data-edit="${role.id}" data-edit-idx="${index}">编辑</button><button class="role-item-delete" data-delete="${role.id}" data-delete-idx="${index}">×</button>`}
     </div>
   `).join('');
+
+  // 保存本次渲染用的角色对象快照：点编辑时直接取这里，
+  // 不再依赖 role.id 去 state 里二次查找（ID 对不上时会误报「找不到角色」）
+  list._renderedRoles = state.agentRoles.slice();
 
   // 角色点击选择
   list.querySelectorAll('.role-item').forEach(item => {
@@ -13144,27 +13151,28 @@ function renderRoleList() {
     });
   });
 
-  // 编辑按钮
-  list.querySelectorAll('.role-item-edit').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const roleId = btn.dataset.edit;
-      openRoleEditModal(roleId);
-    });
-  });
+  // 编辑/删除按钮由 initRoleManagement 里的 #role-list 委托监听统一处理，
+  // 列表重绘后不会丢事件。
 
-  // 删除按钮
-  list.querySelectorAll('.role-item-delete').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const roleId = btn.dataset.delete;
-      if (await window.AppDialog.confirm({ type: 'warning', title: '删除角色', message: '确定删除这个角色吗？', buttons: ['删除', '取消'] })) {
-        await window.api.deleteAgentRole(roleId);
-        if (state.currentRoleId === roleId) state.currentRoleId = 'general';
-        await loadAgentRoles();
-      }
-    });
+  // 删除按钮事件见下方委托监听
+}
+
+function applyRoleToolsToAgentSettings(role, retry = 0) {
+  if (!role || !Array.isArray(role.tools) || !role.tools.length) return;
+  // 角色声明的工具要在 Agent 设置里真正勾上，否则下载来的智能体只是提示词外壳，
+  // 请求时 enabledTools 不带这些工具，运行起来没有任何能力。
+  const boxes = document.querySelectorAll('.agent-tool-check');
+  if (!boxes.length && retry < 1) {
+    setTimeout(() => applyRoleToolsToAgentSettings(role, retry + 1), 120);
+    return;
+  }
+  let changed = false;
+  boxes.forEach(cb => {
+    if (cb.dataset.mcp) return; // MCP 由连接器/商城单独启停，不跟角色切换互相覆盖
+    const should = role.tools.includes(cb.value);
+    if (cb.checked !== should) { cb.checked = should; changed = true; }
   });
+  if (changed && typeof onAgentToolToggle === 'function') onAgentToolToggle();
 }
 
 function selectRole(roleId) {
@@ -13175,7 +13183,8 @@ function selectRole(roleId) {
   renderRoleList();
   const role = state.agentRoles.find(r => r.id === roleId);
   if (role) {
-    const roleIcon = window.RoleIcons ? window.RoleIcons.getRoleIcon(role.id, '16px') : '';
+    applyRoleToolsToAgentSettings(role);
+    const roleIcon = window.RoleIcons ? window.RoleIcons.getRoleIcon(role, '16px') : '';
     showToast('已切换角色', roleIcon + ' ' + role.name, 'success', { useHtml: true });
   }
 }
@@ -13185,12 +13194,12 @@ function updateCurrentRoleDisplay() {
   const emojiEl = document.getElementById('current-role-emoji');
   if (emojiEl && role) {
     if (window.RoleIcons) {
-      emojiEl.innerHTML = window.RoleIcons.getRoleIcon(role.id, '18px');
+      emojiEl.innerHTML = window.RoleIcons.getRoleIcon(role, '18px');
       emojiEl.style.display = 'inline-flex';
       emojiEl.style.alignItems = 'center';
       emojiEl.style.justifyContent = 'center';
     } else {
-      emojiEl.innerHTML = window.RoleIcons ? window.RoleIcons.getRoleIcon(role.id, '24px') : window.ElIcons.ICONS.ai;
+      emojiEl.innerHTML = window.RoleIcons ? window.RoleIcons.getRoleIcon(role, '24px') : window.ElIcons.ICONS.ai;
     }
   }
   // 更新工具栏图标样式（浅色模式下使用描边式）
@@ -13217,30 +13226,47 @@ function updateToolbarIconStyles() {
   }
 }
 
-function openRoleEditModal(roleId) {
-  const modal = document.getElementById('role-edit-modal');
-  const isNew = !roleId;
-  const defaultTools = state.agentTools.length
-    ? state.agentTools.map(t => t.name)
-    : ['run_shell', 'read_file', 'write_file', 'get_system_info', 'pet_action', 'web_search', 'web_fetch', 'http_request', 'file_search', 'directory_list', 'copy_file', 'move_file', 'create_directory', 'download_file', 'get_current_time', 'calculator', 'check_url', 'open_url'];
-  const role = isNew ? { id: 'custom_' + Date.now(), name: '', emoji: '', description: '', systemPrompt: '', tools: defaultTools, temperature: 0.7, maxIterations: 0 } : state.agentRoles.find(r => r.id === roleId);
-  if (!role) return;
+function openRoleEditModal(roleId, roleOverride) {
+  try {
+    const modal = document.getElementById('role-edit-modal');
+    if (!modal) return;
+    const isNew = !roleId && !roleOverride;
+    const tools = Array.isArray(state.agentTools) ? state.agentTools : [];
+    const defaultTools = tools.length
+      ? tools.map(t => t.name)
+      : ['run_shell', 'read_file', 'write_file', 'get_system_info', 'pet_action', 'web_search', 'web_fetch', 'http_request', 'file_search', 'directory_list', 'copy_file', 'move_file', 'create_directory', 'download_file', 'get_current_time', 'calculator', 'check_url', 'open_url'];
+    const roles = Array.isArray(state.agentRoles) ? state.agentRoles : [];
+    const role = roleOverride || (isNew ? { id: 'custom_' + Date.now(), name: '', emoji: '', description: '', systemPrompt: '', tools: defaultTools, temperature: 0.7, maxIterations: 0 } : roles.find(r => r.id === roleId));
+    if (!role) {
+      showToast('没有找到这个角色', '请重新打开角色列表再试', 'error');
+      return;
+    }
+    const editId = role.id || roleId;
 
-  document.getElementById('role-edit-title').textContent = isNew ? '新建角色' : '编辑角色';
-  document.getElementById('role-edit-name').value = role.name || '';
-  document.getElementById('role-edit-emoji').value = role.emoji || '';
-  document.getElementById('role-edit-desc').value = role.description || '';
-  document.getElementById('role-edit-prompt').value = role.systemPrompt || '';
-  document.getElementById('role-edit-temp').value = role.temperature || 0.7;
-  document.getElementById('role-edit-iter').value = (role.maxIterations === undefined || role.maxIterations === null) ? 0 : role.maxIterations;
+    // 弹窗必须挂在 body 上：它现在嵌在 .chat-main 里，父级有 overflow 裁切，
+    // 某些布局下 display 已切成 flex 但仍被裁掉，看起来就是「点编辑没反应」。
+    if (modal.parentElement !== document.body) document.body.appendChild(modal);
 
-  document.querySelectorAll('.role-tool-check').forEach(cb => {
-    cb.checked = (role.tools || []).includes(cb.value);
-  });
+    document.getElementById('role-edit-title').textContent = isNew ? '新建角色' : '编辑角色';
+    document.getElementById('role-edit-name').value = role.name || '';
+    document.getElementById('role-edit-emoji').value = role.emoji || '';
+    document.getElementById('role-edit-desc').value = role.description || '';
+    document.getElementById('role-edit-prompt').value = role.systemPrompt || '';
+    document.getElementById('role-edit-temp').value = role.temperature || 0.7;
+    document.getElementById('role-edit-iter').value = (role.maxIterations === undefined || role.maxIterations === null) ? 0 : role.maxIterations;
 
-  modal.style.display = 'flex';
-  modal.dataset.editingId = isNew ? role.id : roleId;
-  modal.dataset.isNew = isNew ? '1' : '0';
+    renderRoleToolList(role.tools || []);
+    document.querySelectorAll('.role-tool-check').forEach(cb => {
+      cb.checked = (role.tools || []).includes(cb.value);
+    });
+
+    modal.style.display = 'flex';
+    modal.dataset.editingId = editId;
+    modal.dataset.isNew = isNew ? '1' : '0';
+  } catch (e) {
+    console.error('[RoleEdit] 打开编辑弹窗失败:', e);
+    showToast('打开编辑失败', e.message || String(e), 'error');
+  }
 }
 
 function closeRoleEditModal() {
@@ -13493,17 +13519,28 @@ function renderAgentToolList() {
   if (!box || !state.agentTools.length) return;
   box.innerHTML = state.agentTools.map(t => `
     <label class="agent-tool-item" title="${desensitizeToolText(t.description || '')}">
-      <input type="checkbox" class="agent-tool-check" value="${t.name}" checked>
+      <input type="checkbox" class="agent-tool-check" value="${t.name}" ${t.isMcp ? 'data-mcp="1"' : ''} checked>
       <span>${toolDisplayName(t.name)}</span>
     </label>`).join('');
 }
 
-function renderRoleToolList() {
+function renderRoleToolList(extraTools = []) {
   const box = document.getElementById('role-edit-tools');
-  if (!box || !state.agentTools.length) return;
-  box.innerHTML = state.agentTools.map(t => `
-    <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-primary);cursor:pointer;" title="${t.description || ''}">
-      <input type="checkbox" value="${t.name}" class="role-tool-check"> ${toolDisplayName(t.name)}
+  if (!box) return;
+  // 角色编辑器要能看到角色声明的全部工具（含无风险工具），否则下载来的
+  // 智能体只有少数几个有风险工具显示出来，其余技能看起来「没勾选」。
+  const names = [];
+  const push = (n) => { if (n && !names.includes(n)) names.push(n); };
+  (state.agentTools || []).forEach(t => push(t.name));
+  (Array.isArray(extraTools) ? extraTools : []).forEach(push);
+  if (!names.length) return;
+  const descOf = (n) => {
+    const t = (state.agentTools || []).find(x => x.name === n);
+    return t ? desensitizeToolText(t.description || '') : '';
+  };
+  box.innerHTML = names.map(n => `
+    <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-primary);cursor:pointer;" title="${descOf(n)}">
+      <input type="checkbox" value="${n}" class="role-tool-check"> ${toolDisplayName(n)}
     </label>`).join('');
 }
 
@@ -13647,6 +13684,33 @@ function initRoleManagement() {
     panel.style.display = willOpen ? 'block' : 'none';
   });
 
+  // 角色列表里的编辑/删除：委托监听，列表每次重绘都不会丢
+  document.getElementById('role-list')?.addEventListener('click', async (e) => {
+    const listEl = document.getElementById('role-list');
+    const editBtn = e.target.closest('.role-item-edit');
+    if (editBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const idx = parseInt(editBtn.dataset.editIdx, 10);
+      const rendered = Array.isArray(listEl._renderedRoles) ? listEl._renderedRoles[idx] : null;
+      openRoleEditModal(rendered ? rendered.id : editBtn.dataset.edit, rendered);
+      return;
+    }
+    const delBtn = e.target.closest('.role-item-delete');
+    if (delBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const idx = parseInt(delBtn.dataset.deleteIdx, 10);
+      const rendered = Array.isArray(listEl._renderedRoles) ? listEl._renderedRoles[idx] : null;
+      const roleId = rendered ? rendered.id : delBtn.dataset.delete;
+      if (await window.AppDialog.confirm({ type: 'warning', title: '删除角色', message: '确定删除这个角色吗？', buttons: ['删除', '取消'] })) {
+        await window.api.deleteAgentRole(roleId);
+        if (state.currentRoleId === roleId) state.currentRoleId = 'general';
+        await loadAgentRoles();
+      }
+    }
+  });
+
   // 关闭角色面板
   document.getElementById('btn-role-panel-close')?.addEventListener('click', () => {
     document.getElementById('role-select-panel').style.display = 'none';
@@ -13670,6 +13734,13 @@ function initRoleManagement() {
   // 角色编辑弹窗
   document.getElementById('role-edit-cancel')?.addEventListener('click', closeRoleEditModal);
   document.getElementById('role-edit-save')?.addEventListener('click', saveRoleFromModal);
+
+  // 启动时补一次：上次选中的是下载/自定义智能体，把它配置里的工具重新勾上
+  // （修复旧版本下载后工具没勾选、重开应用仍是空壳的情况）
+  setTimeout(() => {
+    const role = (state.agentRoles || []).find(r => r.id === state.currentRoleId);
+    if (role && !role.isPreset) applyRoleToolsToAgentSettings(role);
+  }, 800);
 }
 
 

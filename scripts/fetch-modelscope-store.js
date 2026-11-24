@@ -216,19 +216,27 @@ function buildAgentItems(list, max) {
     const catRaw = Array.isArray(s.Catalogues) && s.Catalogues.length ? s.Catalogues[0] : 'other';
     const name = s.DisplayName || s.Name || id;
     const desc = cleanLine(s.Description, 120);
-    const sys = sp.slice(0, 1200) + (sp.length > 1200 ? '\n…（原文较长，已截断；安装后如需完整指令可在魔搭源页查看）' : '') +
+    const sys = sp +
       '\n\n【本地化说明】本角色源自魔搭智能体广场（https://modelscope.cn/agents），原始条目 ' + (s.Path || '') + '/' + (s.Name || '') + '。' +
-      '其关联的魔搭托管 Skills/MCP（' + ((s.Skills || []).map(x => x.Name).join('、') || '无') + ' / ' + ((s.Mcps || []).map(x => x.Name).join('、') || '无') + '）在本地需自行配置对应工具；其余按原指令执行。';
+      '其关联的魔搭托管 Skills/MCP（' + ((s.Skills || []).map(x => x.Name).join('、') || '无') + ' / ' + ((s.Mcps || []).map(x => x.Name).join('、') || '无') + '）。';
+    const depSkills = (s.Skills || []).map(x => ({ name: x.Name || '', description: x.Description || '' })).filter(x => x.name);
+    const depMcps = (s.Mcps || []).map(x => ({ name: x.Name || '', description: x.Description || '' })).filter(x => x.name);
     items.push({
       id, type: 'agent', name, category: CAT_MAP[catRaw] || String(catRaw).toLowerCase().slice(0, 20) || 'other',
       version: '1.0.0',
       description: desc + '（魔搭智能体广场 · ' + s.Framework + ' · 访问 ' + fmt(s.VisitCount) + ' · 下载 ' + fmt(s.Downloads) + ' · ' + (s.License || '') + '）',
       icon: { kind: 'url', url: s.LogoUrl || MCP_ICON },
+      // 关联依赖写进目录，安装时据此自动补装本地已有的技能 / MCP
+      skills: depSkills,
+      mcps: depMcps,
+      modelscope: { path: s.Path || '', name: s.Name || '' },
       role: {
         id, name, emoji: '🤖',
         description: desc,
         systemPrompt: sys,
         tools: ['web_search', 'web_fetch', 'calculator', 'todo_write', 'memory_search', 'read_file', 'write_file'],
+        skills: depSkills.map(x => x.name),
+        mcps: depMcps.map(x => x.name),
         temperature: 0.6, maxIterations: 12, allowDangerous: false, isPreset: false
       }
     });

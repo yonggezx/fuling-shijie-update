@@ -1726,12 +1726,29 @@ function getCustomRolesPath() {
 }
 
 // 加载自定义角色
+// 商城下载的角色历史版本可能带 isPreset: true / 缺 emoji 等字段；
+// 这里统一按「自定义角色」修正，否则界面会把它当预设角色，连编辑按钮都不显示。
+function normalizeCustomRole(role) {
+  if (!role || typeof role !== 'object' || !role.id || !role.name) return null;
+  const out = { ...role };
+  out.isPreset = false;
+  out.installedFrom = out.installedFrom || 'custom';
+  if (!out.emoji && out.icon && out.icon.kind === 'emoji') out.emoji = String(out.icon.value || '');
+  if (!out.emoji) out.emoji = '';
+  if (!Array.isArray(out.tools)) out.tools = [];
+  const temp = Number(out.temperature);
+  out.temperature = Number.isFinite(temp) ? temp : 0.7;
+  const iter = Number(out.maxIterations);
+  out.maxIterations = Number.isFinite(iter) && iter > 0 ? Math.floor(iter) : 0;
+  return out;
+}
+
 function loadCustomRoles() {
   try {
     const p = getCustomRolesPath();
     if (fs.existsSync(p)) {
       const data = JSON.parse(fs.readFileSync(p, 'utf8'));
-      return Array.isArray(data) ? data : [];
+      if (Array.isArray(data)) return data.map(normalizeCustomRole).filter(Boolean);
     }
   } catch (e) { console.log('[AgentRoles] 加载自定义角色失败:', e.message); }
   return [];
@@ -1746,9 +1763,13 @@ function saveCustomRoles(roles) {
 }
 
 // 获取所有角色（预设 + 自定义）
+// 预设角色只读（不可编辑/删除）；自定义角色一律可编辑，且按 id 去重，
+// 避免同 id 出现两条、点编辑时却命中预设角色导致「下载的智能体改不了」。
 function getAgentRoles() {
-  const custom = loadCustomRoles();
-  return [...PRESET_AGENT_ROLES, ...custom];
+  const presets = PRESET_AGENT_ROLES.map(r => ({ ...r, isPreset: true }));
+  const presetIds = new Set(presets.map(r => r.id));
+  const custom = loadCustomRoles().filter(r => !presetIds.has(r.id));
+  return [...presets, ...custom];
 }
 
 // 根据 ID 获取角色
@@ -1762,7 +1783,8 @@ function saveAgentRole(role) {
   if (!role || !role.id || !role.name) return { success: false, error: '角色ID和名称不能为空' };
   const custom = loadCustomRoles();
   const idx = custom.findIndex(r => r.id === role.id);
-  const roleData = { ...role, isPreset: false };
+  // 保留原条目里的额外字段（installedFrom / allowDangerous 等），编辑不会把商城来源抹掉
+  const roleData = { ...(idx >= 0 ? custom[idx] : {}), ...role, isPreset: false };
   if (idx >= 0) custom[idx] = roleData; else custom.push(roleData);
   saveCustomRoles(custom);
   return { success: true, role: roleData };
