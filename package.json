@@ -128,7 +128,7 @@
       }
     },
     "dmg": {
-      "title": "浮灵饰界 ${version}",
+      "title": "浮灵饰界-${version}-${arch}",
       "background": "assets/dmg/background.png",
       "icon": "assets/icons/icon.icns",
       "iconSize": 96,
